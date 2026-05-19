@@ -68,10 +68,6 @@ _testmain.go
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Go workspace file
-go.work
-go.work.sum
-
 # env file
 .env
 
@@ -82,7 +78,7 @@ go.work.sum
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Go workspace file
-go.work
-
 .venv
+
+/tcp-camera-backend/tcp-camera-backend
+/ffmpeg-streamer/ffmpeg-streamer
