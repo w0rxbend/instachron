@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -15,25 +18,57 @@ type tcpFrameServer struct {
 	readTimeout   time.Duration
 	storage       *frameStorage
 	logger        *log.Logger
+	mu            sync.Mutex
+	conns         map[net.Conn]struct{}
 }
 
-func (s *tcpFrameServer) listenAndServe() error {
+func (s *tcpFrameServer) listenAndServe(ctx context.Context) error {
 	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.addr, err)
 	}
 	defer listener.Close()
 
+	s.conns = make(map[net.Conn]struct{})
+
+	var wg sync.WaitGroup
+	go func() {
+		<-ctx.Done()
+		listener.Close()
+		s.mu.Lock()
+		for c := range s.conns {
+			c.Close()
+		}
+		s.mu.Unlock()
+	}()
+
 	s.logger.Printf("TCP frame server listening on %s", listener.Addr())
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				wg.Wait()
+				return ctx.Err()
+			}
 			s.logger.Printf("accept failed: %v", err)
 			continue
 		}
 
-		go s.handleConnection(conn)
+		s.mu.Lock()
+		s.conns[conn] = struct{}{}
+		s.mu.Unlock()
+
+		wg.Add(1)
+		go func() {
+			defer func() {
+				s.mu.Lock()
+				delete(s.conns, conn)
+				s.mu.Unlock()
+				wg.Done()
+			}()
+			s.handleConnection(conn)
+		}()
 	}
 }
 
@@ -58,39 +93,55 @@ func (s *tcpFrameServer) handleConnection(conn net.Conn) {
 			return
 		}
 
-		header, err := parseFrameHeader(headerBytes)
+		header, err := s.readFrameHeader(conn, headerBytes)
 		if err != nil {
 			s.logger.Printf("bad header from %s: %v", remoteAddr, err)
 			return
 		}
 
 		if header.PayloadSize == 0 || header.PayloadSize > s.maxFrameBytes {
-			s.logger.Printf("invalid payload size from %s: seq=%d size=%d max=%d",
-				remoteAddr, header.Sequence, header.PayloadSize, s.maxFrameBytes)
+			s.logger.Printf("invalid payload size from %s: camera=%d seq=%d size=%d max=%d",
+				remoteAddr, header.CameraID, header.Sequence, header.PayloadSize, s.maxFrameBytes)
 			return
 		}
 
 		payload := make([]byte, int(header.PayloadSize))
 		if _, err := io.ReadFull(conn, payload); err != nil {
-			s.logger.Printf("read payload from %s failed: seq=%d size=%d err=%v",
-				remoteAddr, header.Sequence, header.PayloadSize, err)
+			s.logger.Printf("read payload from %s failed: camera=%d seq=%d size=%d err=%v",
+				remoteAddr, header.CameraID, header.Sequence, header.PayloadSize, err)
 			return
 		}
 
 		if !looksLikeJPEG(payload) {
-			s.logger.Printf("dropping non-JPEG payload from %s: seq=%d size=%d",
-				remoteAddr, header.Sequence, header.PayloadSize)
+			s.logger.Printf("dropping non-JPEG payload from %s: camera=%d seq=%d size=%d",
+				remoteAddr, header.CameraID, header.Sequence, header.PayloadSize)
 			continue
 		}
 
 		path, err := s.storage.writeFrame(header, payload)
 		if err != nil {
-			s.logger.Printf("write frame failed: seq=%d size=%d err=%v",
-				header.Sequence, header.PayloadSize, err)
+			s.logger.Printf("write frame failed: camera=%d seq=%d size=%d err=%v",
+				header.CameraID, header.Sequence, header.PayloadSize, err)
 			return
 		}
 
-		s.logger.Printf("stored frame: seq=%d camera_ms=%d bytes=%d path=%s",
-			header.Sequence, header.TimestampMs, header.PayloadSize, path)
+		s.logger.Printf("stored frame: camera=%d seq=%d camera_ms=%d bytes=%d path=%s",
+			header.CameraID, header.Sequence, header.TimestampMs, header.PayloadSize, path)
+	}
+}
+
+func (s *tcpFrameServer) readFrameHeader(conn net.Conn, headerBytes []byte) (frameHeader, error) {
+	magic := binary.BigEndian.Uint32(headerBytes[0:4])
+	switch magic {
+	case frameMagicLegacy:
+		return parseFrameHeader(headerBytes)
+	case frameMagicWithDevice:
+		cameraIDBytes := make([]byte, frameCameraIDSize)
+		if _, err := io.ReadFull(conn, cameraIDBytes); err != nil {
+			return frameHeader{}, fmt.Errorf("read camera id: %w", err)
+		}
+		return parseFrameHeaderWithCameraID(headerBytes, cameraIDBytes)
+	default:
+		return frameHeader{}, fmt.Errorf("invalid frame magic: 0x%08x", magic)
 	}
 }

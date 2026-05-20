@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 )
 
 const (
 	defaultAddr          = "0.0.0.0:5000"
 	defaultOutputDir     = "./frames"
-	defaultCurrentImage  = "./current-image.jpeg"
 	defaultMaxFrameBytes = 5 * 1024 * 1024
 	defaultReadTimeout   = 30 * time.Second
 )
@@ -20,7 +23,6 @@ func main() {
 
 	storage, err := newFrameStorage(
 		envString("FRAME_OUTPUT_DIR", defaultOutputDir),
-		envString("CURRENT_IMAGE_PATH", defaultCurrentImage),
 	)
 	if err != nil {
 		logger.Fatalf("storage init failed: %v", err)
@@ -34,7 +36,10 @@ func main() {
 		logger:        logger,
 	}
 
-	if err := server.listenAndServe(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := server.listenAndServe(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Fatalf("server failed: %v", err)
 	}
 }
