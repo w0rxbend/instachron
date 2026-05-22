@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ const mjpegBoundary = "instachron"
 type apiServer struct {
 	manager   *hubManager
 	indexHTML []byte
+	logger    *log.Logger
 }
 
 func (s *apiServer) routes() http.Handler {
@@ -40,6 +42,7 @@ func (s *apiServer) handleCameras(w http.ResponseWriter, r *http.Request) {
 	if ids == nil {
 		ids = []string{}
 	}
+	s.logger.Printf("GET /cameras -> %d camera(s)", len(ids))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ids)
 }
@@ -75,6 +78,8 @@ func (s *apiServer) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	id := r.PathValue("id")
 	hub := s.manager.hub(id)
+	s.logger.Printf("GET /cameras/%s/stream -> subscriber attached", id)
+	defer s.logger.Printf("GET /cameras/%s/stream -> subscriber detached", id)
 
 	w.Header().Set("Content-Type", "multipart/x-mixed-replace;boundary="+mjpegBoundary)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
@@ -91,15 +96,24 @@ func (s *apiServer) handleStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n",
-				mjpegBoundary, len(f))
-			if _, err := w.Write(f); err != nil {
+			if err := writeMJPEGFrame(w, f); err != nil {
 				return
 			}
-			fmt.Fprintf(w, "\r\n")
 			flusher.Flush()
 		}
 	}
+}
+
+func writeMJPEGFrame(w http.ResponseWriter, f frame) error {
+	if _, err := fmt.Fprintf(w, "--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n",
+		mjpegBoundary, len(f)); err != nil {
+		return err
+	}
+	if _, err := w.Write(f); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(w, "\r\n")
+	return err
 }
 
 const indexHTML = `<!DOCTYPE html>
@@ -138,13 +152,14 @@ const indexHTML = `<!DOCTYPE html>
     const status = document.getElementById('status');
     const known = new Set();
 
-    function addCamera(id) {
+    function addCamera(camera) {
+      const id = camera.id;
       const div = document.createElement('div');
       div.className = 'cam';
       div.dataset.id = id;
       div.innerHTML =
         '<img src="/cameras/' + id + '/stream" alt="camera ' + id + '">' +
-        '<span class="cam-label">camera ' + id + '</span>' +
+        '<span class="cam-label">camera ' + camera.index + ' · ' + id + '</span>' +
         '<span class="cam-actions">' +
           '<a href="/cameras/' + id + '/snapshot" target="_blank">snapshot</a>' +
           '<a href="/cameras/' + id + '/stream" target="_blank">raw stream</a>' +
@@ -155,12 +170,12 @@ const indexHTML = `<!DOCTYPE html>
     function refresh() {
       fetch('/cameras')
         .then(r => r.json())
-        .then(ids => {
-          status.textContent = ids.length === 0 ? 'no cameras found' : ids.length + ' camera(s)';
-          ids.forEach(id => {
-            if (known.has(id)) return;
-            known.add(id);
-            addCamera(id);
+        .then(cameras => {
+          status.textContent = cameras.length === 0 ? 'no cameras found' : cameras.length + ' camera(s)';
+          cameras.forEach(camera => {
+            if (known.has(camera.id)) return;
+            known.add(camera.id);
+            addCamera(camera);
           });
         })
         .catch(() => { status.textContent = 'error fetching camera list'; });

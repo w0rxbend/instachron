@@ -46,6 +46,12 @@ func (h *cameraHub) subscribe() chan frame {
 	ch := make(chan frame, 1)
 	h.subs[ch] = struct{}{}
 
+	if h.latest == nil {
+		if data, err := os.ReadFile(h.imgPath); err == nil {
+			h.latest = data
+		}
+	}
+
 	if h.cancel == nil {
 		ctx, cancel := context.WithCancel(h.parent)
 		h.cancel = cancel

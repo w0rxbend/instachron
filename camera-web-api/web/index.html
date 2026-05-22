@@ -34,13 +34,13 @@
     const status = document.getElementById('status');
     const known = new Set();
 
-    function addCamera(id) {
+    function addCamera(id, index) {
       const div = document.createElement('div');
       div.className = 'cam';
       div.dataset.id = id;
       div.innerHTML =
         '<img src="/cameras/' + id + '/stream" alt="camera ' + id + '">' +
-        '<span class="cam-label">camera ' + id + '</span>' +
+        '<span class="cam-label">camera ' + index + ' · ' + id + '</span>' +
         '<span class="cam-actions">' +
           '<a href="/cameras/' + id + '/snapshot" target="_blank">snapshot</a>' +
           '<a href="/cameras/' + id + '/stream" target="_blank">raw stream</a>' +
@@ -56,7 +56,7 @@
           ids.forEach(id => {
             if (known.has(id)) return;
             known.add(id);
-            addCamera(id);
+            addCamera(id, Number.parseInt(id, 10));
           });
         })
         .catch(() => { status.textContent = 'error fetching camera list'; });

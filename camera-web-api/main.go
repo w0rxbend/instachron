@@ -37,7 +37,7 @@ func main() {
 	manager := newHubManager(frameDir, poll, ctx)
 	go manager.run()
 
-	api := &apiServer{manager: manager, indexHTML: indexHTML}
+	api := &apiServer{manager: manager, indexHTML: indexHTML, logger: logger}
 	httpSrv := &http.Server{
 		Addr:    addr,
 		Handler: api.routes(),

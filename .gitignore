@@ -80,5 +80,18 @@ _testmain.go
 
 .venv
 
-/tcp-camera-backend/tcp-camera-backend
-/ffmpeg-streamer/ffmpeg-streamer
+**/node_modules/**
+dashboard/.output
+dashboard/dist
+dashboard/build
+dashboard/.env
+dashboard/.env.local
+dashboard/.env.development
+dashboard/.env.test
+dashboard/.env.production
+dashboard/.DS_Store
+dashboard/.vscode
+dashboard/.idea
+dashboard/.cache
+dashboard/.nuxt
+dashboard/node_modules
