@@ -13,7 +13,7 @@ import (
 
 const (
 	defaultAddr         = ":8080"
-	defaultFrameDir     = "./frames"
+	defaultFrameDir     = "./../frames"
 	defaultWebDir       = "./web"
 	defaultPollInterval = 250 * time.Millisecond
 )

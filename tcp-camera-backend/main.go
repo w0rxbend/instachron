@@ -13,7 +13,7 @@ import (
 
 const (
 	defaultAddr          = "0.0.0.0:5000"
-	defaultOutputDir     = "./frames"
+	defaultOutputDir     = "./../frames"
 	defaultMaxFrameBytes = 5 * 1024 * 1024
 	defaultReadTimeout   = 30 * time.Second
 )
