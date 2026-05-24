@@ -16,7 +16,7 @@ type tcpFrameServer struct {
 	addr          string
 	maxFrameBytes uint32
 	readTimeout   time.Duration
-	storage       *frameStorage
+	publisher     *framePublisher
 	logger        *log.Logger
 	mu            sync.Mutex
 	conns         map[net.Conn]struct{}
@@ -77,7 +77,17 @@ func (s *tcpFrameServer) handleConnection(conn net.Conn) {
 
 	remoteAddr := conn.RemoteAddr().String()
 	s.logger.Printf("client connected: %s", remoteAddr)
-	defer s.logger.Printf("client disconnected: %s", remoteAddr)
+
+	seenCameraIDs := make(map[uint32]struct{})
+	defer func() {
+		for id := range seenCameraIDs {
+			s.logger.Printf("camera offline: camera=%d addr=%s", id, remoteAddr)
+			if s.publisher != nil {
+				s.publisher.publishOffline(id)
+			}
+		}
+		s.logger.Printf("client disconnected: %s", remoteAddr)
+	}()
 
 	headerBytes := make([]byte, frameHeaderSize)
 
@@ -118,15 +128,14 @@ func (s *tcpFrameServer) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		path, err := s.storage.writeFrame(header, payload)
-		if err != nil {
-			s.logger.Printf("write frame failed: camera=%d seq=%d size=%d err=%v",
-				header.CameraID, header.Sequence, header.PayloadSize, err)
-			return
+		seenCameraIDs[header.CameraID] = struct{}{}
+
+		if s.publisher != nil {
+			s.publisher.publish(header.CameraID, payload)
 		}
 
-		s.logger.Printf("stored frame: camera=%d seq=%d camera_ms=%d bytes=%d path=%s",
-			header.CameraID, header.Sequence, header.TimestampMs, header.PayloadSize, path)
+		s.logger.Printf("published frame: camera=%d seq=%d camera_ms=%d bytes=%d",
+			header.CameraID, header.Sequence, header.TimestampMs, header.PayloadSize)
 	}
 }
 

@@ -1,11 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/jpeg"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -31,66 +30,7 @@ func TestGridLayout(t *testing.T) {
 	}
 }
 
-func TestDiscoverCameras(t *testing.T) {
-	dir := t.TempDir()
-
-	// camera "0" with current-image.jpeg
-	if err := os.MkdirAll(filepath.Join(dir, "0"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "0", "current-image.jpeg"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// camera "1" with current-image.jpeg
-	if err := os.MkdirAll(filepath.Join(dir, "1"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "1", "current-image.jpeg"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// a subdir without current-image.jpeg — should be ignored
-	if err := os.MkdirAll(filepath.Join(dir, "other"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// a file at top level — should be ignored
-	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ids, err := discoverCameras(dir)
-	if err != nil {
-		t.Fatalf("discoverCameras returned error: %v", err)
-	}
-	if len(ids) != 2 || ids[0] != "0" || ids[1] != "1" {
-		t.Fatalf("discoverCameras = %v, want [0 1]", ids)
-	}
-}
-
-func TestDiscoverCamerasEmptyDir(t *testing.T) {
-	ids, err := discoverCameras(t.TempDir())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(ids) != 0 {
-		t.Fatalf("expected empty slice, got %v", ids)
-	}
-}
-
-func TestDiscoverCamerasMissingDir(t *testing.T) {
-	ids, err := discoverCameras("/tmp/does-not-exist-xyzzy")
-	if err != nil {
-		t.Fatalf("unexpected error for missing dir: %v", err)
-	}
-	if len(ids) != 0 {
-		t.Fatalf("expected empty slice, got %v", ids)
-	}
-}
-
 func TestFitImagePreservesAspect(t *testing.T) {
-	// 640x480 source into 320x240 cell: fits exactly, scale 0.5
 	src := image.NewRGBA(image.Rect(0, 0, 640, 480))
 	out := fitImage(src, 320, 240)
 	b := out.Bounds()
@@ -100,7 +40,6 @@ func TestFitImagePreservesAspect(t *testing.T) {
 }
 
 func TestFitImageLetterboxes(t *testing.T) {
-	// 640x360 (16:9) into 320x240 (4:3): width fits at 320, height = 180 < 240
 	src := image.NewRGBA(image.Rect(0, 0, 640, 360))
 	out := fitImage(src, 320, 240)
 	b := out.Bounds()
@@ -110,7 +49,6 @@ func TestFitImageLetterboxes(t *testing.T) {
 }
 
 func TestFitImageNoScaleNeeded(t *testing.T) {
-	// already fits exactly — should return the original image object
 	src := image.NewRGBA(image.Rect(0, 0, 320, 240))
 	out := fitImage(src, 320, 240)
 	if out != image.Image(src) {
@@ -125,7 +63,7 @@ func TestComposeCanvasDimensions(t *testing.T) {
 		frames[id] = &cameraFrame{img: image.NewRGBA(image.Rect(0, 0, 320, 240))}
 	}
 
-	cols, rows := gridLayout(len(ids)) // 2x2
+	cols, rows := gridLayout(len(ids))
 	canvas := composeCanvas(ids, frames, cols, rows, 320, 240)
 	b := canvas.Bounds()
 
@@ -135,8 +73,6 @@ func TestComposeCanvasDimensions(t *testing.T) {
 }
 
 func TestComposeCanvasPixelPlacement(t *testing.T) {
-	// Camera "0" is solid red, camera "1" is solid blue.
-	// In a 2×1 grid (2 cameras), "0" is on the left, "1" on the right.
 	redImg := solidColorImage(color.RGBA{255, 0, 0, 255}, 320, 240)
 	blueImg := solidColorImage(color.RGBA{0, 0, 255, 255}, 320, 240)
 
@@ -146,16 +82,14 @@ func TestComposeCanvasPixelPlacement(t *testing.T) {
 		"1": {img: blueImg},
 	}
 
-	cols, rows := gridLayout(2) // 2x1
+	cols, rows := gridLayout(2)
 	canvas := composeCanvas(ids, frames, cols, rows, 320, 240)
 
-	// Left half should be red
 	r, g, b, _ := canvas.At(160, 120).RGBA()
 	if r>>8 != 255 || g>>8 != 0 || b>>8 != 0 {
 		t.Errorf("left cell pixel = (%d,%d,%d), want red", r>>8, g>>8, b>>8)
 	}
 
-	// Right half should be blue
 	r, g, b, _ = canvas.At(480, 120).RGBA()
 	if r>>8 != 0 || g>>8 != 0 || b>>8 != 255 {
 		t.Errorf("right cell pixel = (%d,%d,%d), want blue", r>>8, g>>8, b>>8)
@@ -174,23 +108,16 @@ func TestEncodeJPEGBytesRoundtrip(t *testing.T) {
 	}
 }
 
-func TestReadJPEGFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "frame.jpeg")
-	img := solidColorImage(color.RGBA{200, 100, 50, 255}, 32, 32)
-
-	f, err := os.Create(path)
-	if err != nil {
+func TestDecodeJPEG(t *testing.T) {
+	src := solidColorImage(color.RGBA{200, 100, 50, 255}, 32, 32)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
 	}
-	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: 90}); err != nil {
-		f.Close()
-		t.Fatal(err)
-	}
-	f.Close()
 
-	out, err := readJPEGFile(path)
+	out, err := decodeJPEG(buf.Bytes())
 	if err != nil {
-		t.Fatalf("readJPEGFile returned error: %v", err)
+		t.Fatalf("decodeJPEG returned error: %v", err)
 	}
 	b := out.Bounds()
 	if b.Dx() != 32 || b.Dy() != 32 {

@@ -10,30 +10,27 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 )
 
 const (
-	defaultFrameDir     = "./frames"
-	defaultFFmpegPath   = "ffmpeg"
-	defaultFrameRate    = 10
-	defaultPollInterval = 250 * time.Millisecond
-	defaultRestartDelay = 5 * time.Second
-	defaultCameraID     = 0
-	defaultCellWidth    = 320
-	defaultCellHeight   = 240
+	defaultSocketPath    = "/tmp/instachron/frames.sock"
+	defaultFFmpegPath    = "ffmpeg"
+	defaultFrameRate     = 10
+	defaultRestartDelay  = 5 * time.Second
+	defaultCameraID      = 0
+	defaultCellWidth     = 320
+	defaultCellHeight    = 240
 )
 
 type config struct {
-	frameDir     string
+	socketPath   string
 	cameraID     uint32
 	ffmpegPath   string
 	streamURL    string
 	frameRate    int
-	pollInterval time.Duration
 	restartDelay time.Duration
 	mergeAll     bool
 	cellWidth    int
@@ -51,7 +48,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, cfg, logger); err != nil && !errors.Is(err, context.Canceled) {
+	ipc := newIPCReader(cfg.socketPath, logger)
+	go ipc.run(ctx)
+
+	if err := run(ctx, cfg, ipc, logger); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Fatalf("streamer failed: %v", err)
 	}
 }
@@ -63,12 +63,11 @@ func loadConfig(args []string) (config, error) {
 	}
 
 	cfg := config{
-		frameDir:     envString("FRAME_OUTPUT_DIR", defaultFrameDir),
+		socketPath:   envString("IPC_SOCKET_PATH", defaultSocketPath),
 		cameraID:     envUint32("CAMERA_ID", defaultCameraID),
 		ffmpegPath:   envString("FFMPEG_PATH", defaultFFmpegPath),
 		streamURL:    streamURL,
 		frameRate:    envInt("STREAM_FRAME_RATE", defaultFrameRate),
-		pollInterval: envDuration("FRAME_POLL_INTERVAL", defaultPollInterval),
 		restartDelay: envDuration("FFMPEG_RESTART_DELAY", defaultRestartDelay),
 		mergeAll:     envBool("MERGE_ALL", false),
 		cellWidth:    envInt("CELL_WIDTH", defaultCellWidth),
@@ -94,9 +93,6 @@ func loadConfig(args []string) (config, error) {
 
 	if cfg.frameRate <= 0 {
 		return config{}, fmt.Errorf("STREAM_FRAME_RATE must be greater than 0")
-	}
-	if cfg.pollInterval <= 0 {
-		return config{}, fmt.Errorf("FRAME_POLL_INTERVAL must be greater than 0")
 	}
 	if cfg.restartDelay <= 0 {
 		return config{}, fmt.Errorf("FFMPEG_RESTART_DELAY must be greater than 0")
@@ -140,11 +136,11 @@ func streamURLFromEnv() (string, error) {
 	}
 }
 
-func run(ctx context.Context, cfg config, logger *log.Logger) error {
+func run(ctx context.Context, cfg config, ipc *ipcReader, logger *log.Logger) error {
 	if cfg.mergeAll {
-		logger.Printf("merging all cameras in %s at %d fps", cfg.frameDir, cfg.frameRate)
+		logger.Printf("merging all cameras via IPC %s at %d fps", cfg.socketPath, cfg.frameRate)
 	} else {
-		logger.Printf("watching camera=%d in %s at %d fps", cfg.cameraID, cfg.frameDir, cfg.frameRate)
+		logger.Printf("watching camera=%d via IPC %s at %d fps", cfg.cameraID, cfg.socketPath, cfg.frameRate)
 	}
 
 	for {
@@ -152,7 +148,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			return err
 		}
 
-		err := runFFmpegSession(ctx, cfg, logger)
+		err := runFFmpegSession(ctx, cfg, ipc, logger)
 		if errors.Is(err, context.Canceled) {
 			return err
 		}
@@ -169,7 +165,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	}
 }
 
-func runFFmpegSession(ctx context.Context, cfg config, logger *log.Logger) error {
+func runFFmpegSession(ctx context.Context, cfg config, ipc *ipcReader, logger *log.Logger) error {
 	args := ffmpegArgs(cfg)
 	cmd := exec.CommandContext(ctx, cfg.ffmpegPath, args...)
 	cmd.Stdout = os.Stdout
@@ -186,9 +182,9 @@ func runFFmpegSession(ctx context.Context, cfg config, logger *log.Logger) error
 
 	var feedErr error
 	if cfg.mergeAll {
-		feedErr = feedMergedFrames(ctx, cfg, stdin, logger)
+		feedErr = feedMergedFrames(ctx, cfg, ipc, stdin, logger)
 	} else {
-		feedErr = feedFrames(ctx, cfg, stdin, logger)
+		feedErr = feedFrames(ctx, cfg, ipc, stdin, logger)
 	}
 	_ = stdin.Close()
 
@@ -226,69 +222,33 @@ func ffmpegArgs(cfg config) []string {
 	}
 }
 
-// feedFrames reads current-image.jpeg for the configured camera on each poll tick
-// and feeds frames to ffmpeg at the configured frame rate.
-func feedFrames(ctx context.Context, cfg config, writer io.Writer, logger *log.Logger) error {
+// feedFrames reads the latest JPEG for the configured camera from the IPC reader
+// and feeds it to ffmpeg at the configured frame rate.
+func feedFrames(ctx context.Context, cfg config, ipc *ipcReader, writer io.Writer, logger *log.Logger) error {
 	frameInterval := time.Second / time.Duration(cfg.frameRate)
 	ticker := time.NewTicker(frameInterval)
 	defer ticker.Stop()
-
-	pollTicker := time.NewTicker(cfg.pollInterval)
-	defer pollTicker.Stop()
-
-	imgPath := filepath.Join(cameraFrameDir(cfg.frameDir, cfg.cameraID), "current-image.jpeg")
-	var current []byte
-	var currentModTime time.Time
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-pollTicker.C:
-			info, err := os.Stat(imgPath)
-			if err != nil {
-				if !errors.Is(err, os.ErrNotExist) {
-					logger.Printf("stat current frame failed: %v", err)
-				}
-				continue
-			}
-			if !info.ModTime().After(currentModTime) {
-				continue
-			}
-
-			payload, err := os.ReadFile(imgPath)
-			if err != nil {
-				logger.Printf("read current frame failed: %v", err)
-				continue
-			}
-			if !looksLikeJPEG(payload) {
-				logger.Printf("skipping non-JPEG current frame")
-				continue
-			}
-
-			current = payload
-			currentModTime = info.ModTime()
-			logger.Printf("new frame: camera=%d", cfg.cameraID)
 		case <-ticker.C:
-			if len(current) == 0 {
+			f := ipc.latest(cfg.cameraID)
+			if len(f) == 0 {
 				continue
 			}
-			if _, err := writer.Write(current); err != nil {
+			if _, err := writer.Write(f); err != nil {
 				return fmt.Errorf("write frame to ffmpeg: %w", err)
 			}
 		}
 	}
 }
 
-func cameraFrameDir(frameDir string, cameraID uint32) string {
-	return filepath.Join(frameDir, strconv.FormatUint(uint64(cameraID), 10))
-}
-
 func looksLikeJPEG(payload []byte) bool {
 	if len(payload) < 4 {
 		return false
 	}
-
 	return payload[0] == 0xFF &&
 		payload[1] == 0xD8 &&
 		payload[len(payload)-2] == 0xFF &&
@@ -296,53 +256,37 @@ func looksLikeJPEG(payload []byte) bool {
 }
 
 func envString(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
-	return value
+	return fallback
 }
 
 func envInt(key string, fallback int) int {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
 	}
-
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-
-	return parsed
+	return fallback
 }
 
 func envUint32(key string, fallback uint32) uint32 {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseUint(value, 10, 32); err == nil {
+			return uint32(parsed)
+		}
 	}
-
-	parsed, err := strconv.ParseUint(value, 10, 32)
-	if err != nil {
-		return fallback
-	}
-
-	return uint32(parsed)
+	return fallback
 }
 
 func envDuration(key string, fallback time.Duration) time.Duration {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil {
+			return parsed
+		}
 	}
-
-	parsed, err := time.ParseDuration(value)
-	if err != nil {
-		return fallback
-	}
-
-	return parsed
+	return fallback
 }
 
 func envBool(key string, fallback bool) bool {

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"image"
 	"image/draw"
@@ -11,42 +10,39 @@ import (
 	"io"
 	"log"
 	"math"
-	"os"
-	"path/filepath"
 	"sort"
 	"time"
 )
 
 type cameraFrame struct {
-	img     image.Image
-	modTime time.Time
+	img image.Image
 }
 
-func feedMergedFrames(ctx context.Context, cfg config, writer io.Writer, logger *log.Logger) error {
+// feedMergedFrames composes a grid canvas from all active cameras and feeds it
+// to ffmpeg at the configured frame rate. Recomposition is skipped when no new
+// frames have arrived since the last canvas was built.
+func feedMergedFrames(ctx context.Context, cfg config, ipc *ipcReader, writer io.Writer, logger *log.Logger) error {
 	frameInterval := time.Second / time.Duration(cfg.frameRate)
-	frameTicker := time.NewTicker(frameInterval)
-	defer frameTicker.Stop()
+	ticker := time.NewTicker(frameInterval)
+	defer ticker.Stop()
 
-	pollTicker := time.NewTicker(cfg.pollInterval)
-	defer pollTicker.Stop()
-
-	frames := map[string]*cameraFrame{}
 	var current []byte
+	var lastVersion uint64
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-pollTicker.C:
-			recomposed, encoded, err := pollAndCompose(cfg, frames, logger)
-			if err != nil {
-				logger.Printf("compose failed: %v", err)
-				continue
+		case <-ticker.C:
+			if v := ipc.currentVersion(); v != lastVersion {
+				encoded, err := composeFromIPC(cfg, ipc, logger)
+				if err != nil {
+					logger.Printf("compose failed: %v", err)
+				} else if encoded != nil {
+					current = encoded
+					lastVersion = v
+				}
 			}
-			if recomposed {
-				current = encoded
-			}
-		case <-frameTicker.C:
 			if len(current) == 0 {
 				continue
 			}
@@ -57,96 +53,48 @@ func feedMergedFrames(ctx context.Context, cfg config, writer io.Writer, logger 
 	}
 }
 
-func pollAndCompose(cfg config, frames map[string]*cameraFrame, logger *log.Logger) (bool, []byte, error) {
-	cameraIDs, err := discoverCameras(cfg.frameDir)
-	if err != nil {
-		return false, nil, fmt.Errorf("discover cameras: %w", err)
+func composeFromIPC(cfg config, ipc *ipcReader, logger *log.Logger) ([]byte, error) {
+	all := ipc.allLatest()
+	if len(all) == 0 {
+		return nil, nil
 	}
 
-	changed := false
-	for _, id := range cameraIDs {
-		imgPath := filepath.Join(cfg.frameDir, id, "current-image.jpeg")
-		info, err := os.Stat(imgPath)
+	ids := make([]uint32, 0, len(all))
+	for id := range all {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	frames := make(map[string]*cameraFrame, len(ids))
+	strIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		img, err := decodeJPEG(all[id])
 		if err != nil {
+			logger.Printf("decode JPEG camera=%d: %v", id, err)
 			continue
 		}
-
-		state := frames[id]
-		if state != nil && !info.ModTime().After(state.modTime) {
-			continue
-		}
-
-		img, err := readJPEGFile(imgPath)
-		if err != nil {
-			logger.Printf("read frame camera=%s: %v", id, err)
-			continue
-		}
-
-		frames[id] = &cameraFrame{img: img, modTime: info.ModTime()}
-		changed = true
+		key := fmt.Sprintf("%d", id)
+		frames[key] = &cameraFrame{img: img}
+		strIDs = append(strIDs, key)
 	}
 
-	if !changed {
-		return false, nil, nil
+	if len(strIDs) == 0 {
+		return nil, nil
 	}
 
-	activeIDs := sortedCameraIDs(frames)
-	if len(activeIDs) == 0 {
-		return false, nil, nil
-	}
-
-	cols, rows := gridLayout(len(activeIDs))
-	canvas := composeCanvas(activeIDs, frames, cols, rows, cfg.cellWidth, cfg.cellHeight)
+	cols, rows := gridLayout(len(strIDs))
+	canvas := composeCanvas(strIDs, frames, cols, rows, cfg.cellWidth, cfg.cellHeight)
 	encoded, err := encodeJPEGBytes(canvas)
 	if err != nil {
-		return false, nil, fmt.Errorf("encode canvas: %w", err)
+		return nil, fmt.Errorf("encode canvas: %w", err)
 	}
 
 	logger.Printf("merged canvas: cameras=%d grid=%dx%d canvas=%dx%d bytes=%d",
-		len(activeIDs), cols, rows, cols*cfg.cellWidth, rows*cfg.cellHeight, len(encoded))
-	return true, encoded, nil
-}
-
-// discoverCameras returns sorted IDs of all subdirectories in frameDir
-// that contain a current-image.jpeg file.
-func discoverCameras(frameDir string) ([]string, error) {
-	entries, err := os.ReadDir(frameDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read frame dir: %w", err)
-	}
-
-	var ids []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(frameDir, e.Name(), "current-image.jpeg")); err == nil {
-			ids = append(ids, e.Name())
-		}
-	}
-	sort.Strings(ids)
-	return ids, nil
-}
-
-func readJPEGFile(path string) (image.Image, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	img, err := jpeg.Decode(f)
-	if err != nil {
-		return nil, fmt.Errorf("decode JPEG: %w", err)
-	}
-	return img, nil
+		len(strIDs), cols, rows, cols*cfg.cellWidth, rows*cfg.cellHeight, len(encoded))
+	return encoded, nil
 }
 
 // gridLayout returns the number of columns and rows for a grid of n items.
-// It uses a roughly square layout: cols = ceil(sqrt(n)).
 func gridLayout(n int) (cols, rows int) {
 	if n == 0 {
 		return 0, 0
@@ -157,7 +105,6 @@ func gridLayout(n int) (cols, rows int) {
 }
 
 // composeCanvas draws all camera frames in a cols×rows grid onto a single canvas.
-// Each camera occupies a cellW×cellH cell; frames are scaled to fit (letterboxed).
 func composeCanvas(cameraIDs []string, frames map[string]*cameraFrame, cols, rows, cellW, cellH int) *image.RGBA {
 	canvas := image.NewRGBA(image.Rect(0, 0, cols*cellW, rows*cellH))
 
@@ -183,7 +130,6 @@ func composeCanvas(cameraIDs []string, frames map[string]*cameraFrame, cols, row
 }
 
 // fitImage scales src to fit within maxW×maxH, preserving aspect ratio (letterbox).
-// Returns src unchanged if no scaling is needed.
 func fitImage(src image.Image, maxW, maxH int) image.Image {
 	sb := src.Bounds()
 	srcW, srcH := sb.Dx(), sb.Dy()
@@ -215,19 +161,18 @@ func fitImage(src image.Image, maxW, maxH int) image.Image {
 	return dst
 }
 
+func decodeJPEG(data []byte) (image.Image, error) {
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode JPEG: %w", err)
+	}
+	return img, nil
+}
+
 func encodeJPEGBytes(img image.Image) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-func sortedCameraIDs(frames map[string]*cameraFrame) []string {
-	ids := make([]string, 0, len(frames))
-	for id := range frames {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
 }

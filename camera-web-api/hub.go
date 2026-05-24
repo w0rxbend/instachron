@@ -2,43 +2,47 @@ package main
 
 import (
 	"context"
-	"errors"
-	"os"
-	"path/filepath"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
 )
 
+const offlineThreshold = 5 * time.Second
+
 // frame is a single JPEG snapshot broadcast to all active stream subscribers.
 type frame []byte
 
-// cameraHub watches one camera's current-image.jpeg and fans new frames out
-// to every subscriber channel. The background goroutine starts on the first
-// subscribe call and stops when the last subscriber disconnects.
-type cameraHub struct {
-	imgPath string
-	poll    time.Duration
-	parent  context.Context
-
-	mu     sync.Mutex
-	subs   map[chan frame]struct{}
-	latest frame
-	cancel context.CancelFunc
+// CameraInfo is the API representation of a camera.
+type CameraInfo struct {
+	ID       string `json:"id"`
+	Index    int    `json:"index"`
+	Online   bool   `json:"online"`
+	Rotation int    `json:"rotation"`
 }
 
-func newCameraHub(imgPath string, poll time.Duration, parent context.Context) *cameraHub {
+// cameraHub fans received frames out to every HTTP stream subscriber.
+// Frames are pushed via push(); the hub never touches the filesystem.
+type cameraHub struct {
+	id string
+
+	mu       sync.Mutex
+	subs     map[chan frame]struct{}
+	latest   frame
+	online   bool
+	lastSeen time.Time
+}
+
+func newCameraHub(id string) *cameraHub {
 	return &cameraHub{
-		imgPath: imgPath,
-		poll:    poll,
-		parent:  parent,
-		subs:    make(map[chan frame]struct{}),
+		id:   id,
+		subs: make(map[chan frame]struct{}),
 	}
 }
 
 // subscribe registers a new subscriber and returns its channel. The latest
-// known frame is queued immediately so the client renders without waiting for
-// the next poll tick. Caller must call unsubscribe when done.
+// known frame is sent immediately so the client renders without waiting for
+// the next push. Caller must call unsubscribe when done.
 func (h *cameraHub) subscribe() chan frame {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -46,168 +50,202 @@ func (h *cameraHub) subscribe() chan frame {
 	ch := make(chan frame, 1)
 	h.subs[ch] = struct{}{}
 
-	if h.latest == nil {
-		if data, err := os.ReadFile(h.imgPath); err == nil {
-			h.latest = data
-		}
-	}
-
-	if h.cancel == nil {
-		ctx, cancel := context.WithCancel(h.parent)
-		h.cancel = cancel
-		go h.run(ctx)
-	}
-
 	if h.latest != nil {
 		select {
 		case ch <- h.latest:
 		default:
 		}
 	}
-
 	return ch
 }
 
-// unsubscribe removes the subscriber and closes its channel. Stops the
-// background goroutine when no subscribers remain.
+// unsubscribe removes the subscriber and closes its channel.
 func (h *cameraHub) unsubscribe(ch chan frame) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	delete(h.subs, ch)
 	close(ch)
-
-	if len(h.subs) == 0 && h.cancel != nil {
-		h.cancel()
-		h.cancel = nil
-	}
 }
 
-func (h *cameraHub) run(ctx context.Context) {
-	ticker := time.NewTicker(h.poll)
-	defer ticker.Stop()
-
-	var lastMod time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			info, err := os.Stat(h.imgPath)
-			if err != nil || !info.ModTime().After(lastMod) {
-				continue
-			}
-			data, err := os.ReadFile(h.imgPath)
-			if err != nil {
-				continue
-			}
-			lastMod = info.ModTime()
-			h.broadcast(data)
-		}
-	}
-}
-
-func (h *cameraHub) broadcast(f frame) {
+// push delivers a new frame and fans it out to all subscribers.
+func (h *cameraHub) push(jpeg []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.latest = f
+	h.latest = jpeg
+	h.online = true
+	h.lastSeen = time.Now()
+
 	for ch := range h.subs {
 		select {
-		case ch <- f:
+		case ch <- jpeg:
 		default: // drop frame for slow subscribers rather than block
 		}
 	}
 }
 
-// hubManager owns all per-camera hubs and runs a background camera discovery
-// loop that keeps the known camera list up to date.
+// markOffline records that the camera is no longer sending frames.
+func (h *cameraHub) markOffline() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.online = false
+}
+
+// isStale returns true if the camera has been online but silent for longer
+// than the offline threshold. Called by the liveness goroutine.
+func (h *cameraHub) isStale() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.online && !h.lastSeen.IsZero() && time.Since(h.lastSeen) > offlineThreshold
+}
+
+// info returns a snapshot of the camera's current API state.
+func (h *cameraHub) info(index int, rotation int) CameraInfo {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return CameraInfo{ID: h.id, Index: index, Online: h.online, Rotation: rotation}
+}
+
+// latestFrame returns the most recently received JPEG, or nil if none yet.
+func (h *cameraHub) latestFrame() frame {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.latest
+}
+
+// ---
+
+// hubManager owns all per-camera hubs. Cameras are registered lazily when
+// frames arrive via dispatch; they are never removed so offline cameras remain
+// discoverable. A background liveness goroutine marks cameras offline when
+// they go silent beyond offlineThreshold.
 type hubManager struct {
-	frameDir  string
-	poll      time.Duration
 	serverCtx context.Context
+	rotation  *rotationConfig
 
 	mu      sync.Mutex
 	hubs    map[string]*cameraHub
-	cameras []string
+	ordered []string // IDs in first-seen order, for stable indexing
 }
 
-func newHubManager(frameDir string, poll time.Duration, serverCtx context.Context) *hubManager {
+func newHubManager(serverCtx context.Context, rotation *rotationConfig) *hubManager {
 	return &hubManager{
-		frameDir:  frameDir,
-		poll:      poll,
 		serverCtx: serverCtx,
+		rotation:  rotation,
 		hubs:      make(map[string]*cameraHub),
 	}
 }
 
-// run is the camera discovery loop. It scans frameDir at 4× poll interval and
-// updates the known camera list. Blocks until serverCtx is cancelled.
+// run is the liveness check loop. It runs until serverCtx is cancelled.
 func (m *hubManager) run() {
-	ticker := time.NewTicker(m.poll * 4)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	m.discover()
 	for {
 		select {
 		case <-m.serverCtx.Done():
 			return
 		case <-ticker.C:
-			m.discover()
+			m.checkLiveness()
 		}
 	}
 }
 
-func (m *hubManager) discover() {
-	ids, _ := discoverCameras(m.frameDir)
-	if ids == nil {
-		ids = []string{}
-	}
+func (m *hubManager) checkLiveness() {
 	m.mu.Lock()
-	m.cameras = ids
+	hubs := make([]*cameraHub, 0, len(m.hubs))
+	for _, h := range m.hubs {
+		hubs = append(hubs, h)
+	}
 	m.mu.Unlock()
-}
 
-// knownCameras returns a snapshot of the currently discovered camera IDs.
-func (m *hubManager) knownCameras() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cp := make([]string, len(m.cameras))
-	copy(cp, m.cameras)
-	return cp
-}
-
-// hub returns the hub for the given camera ID, creating it lazily if needed.
-func (m *hubManager) hub(id string) *cameraHub {
-	imgPath := filepath.Join(m.frameDir, id, "current-image.jpeg")
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	h, ok := m.hubs[id]
-	if !ok {
-		h = newCameraHub(imgPath, m.poll, m.serverCtx)
-		m.hubs[id] = h
+	for _, h := range hubs {
+		if h.isStale() {
+			h.markOffline()
+		}
 	}
+}
+
+// dispatch receives an incoming frame for a camera, creating the hub lazily,
+// applies any configured rotation, and pushes the frame to all subscribers.
+func (m *hubManager) dispatch(cameraID uint32, jpeg []byte) {
+	id := fmt.Sprintf("%d", cameraID)
+	if deg := m.rotation.get(id); deg != 0 {
+		jpeg = applyRotation(jpeg, deg)
+	}
+	h := m.getOrCreate(id)
+	h.push(jpeg)
+}
+
+// markOffline marks a specific camera as offline (called on CAMERA_OFFLINE IPC message).
+func (m *hubManager) markOffline(cameraID uint32) {
+	id := fmt.Sprintf("%d", cameraID)
+	m.mu.Lock()
+	h, ok := m.hubs[id]
+	m.mu.Unlock()
+	if ok {
+		h.markOffline()
+	}
+}
+
+// markAllOffline marks every known camera as offline (called when IPC connection drops).
+func (m *hubManager) markAllOffline() {
+	m.mu.Lock()
+	hubs := make([]*cameraHub, 0, len(m.hubs))
+	for _, h := range m.hubs {
+		hubs = append(hubs, h)
+	}
+	m.mu.Unlock()
+
+	for _, h := range hubs {
+		h.markOffline()
+	}
+}
+
+// hub returns the hub for the given string camera ID, creating it lazily.
+// Used by stream and snapshot handlers that address cameras by string ID.
+func (m *hubManager) hub(id string) *cameraHub {
+	return m.getOrCreate(id)
+}
+
+// hubLookup returns the hub for the given ID, or nil if it has never been seen.
+func (m *hubManager) hubLookup(id string) *cameraHub {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hubs[id]
+}
+
+func (m *hubManager) getOrCreate(id string) *cameraHub {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if h, ok := m.hubs[id]; ok {
+		return h
+	}
+
+	h := newCameraHub(id)
+	m.hubs[id] = h
+	m.ordered = append(m.ordered, id)
 	return h
 }
 
-func discoverCameras(frameDir string) ([]string, error) {
-	entries, err := os.ReadDir(frameDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var ids []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(frameDir, e.Name(), "current-image.jpeg")); err == nil {
-			ids = append(ids, e.Name())
-		}
-	}
+// knownCameras returns camera info for every camera seen since startup,
+// sorted by numeric ID for stable ordering.
+func (m *hubManager) knownCameras() []CameraInfo {
+	m.mu.Lock()
+	ids := make([]string, len(m.ordered))
+	copy(ids, m.ordered)
+	m.mu.Unlock()
+
 	sort.Strings(ids)
-	return ids, nil
+
+	infos := make([]CameraInfo, 0, len(ids))
+	for i, id := range ids {
+		m.mu.Lock()
+		h := m.hubs[id]
+		m.mu.Unlock()
+		infos = append(infos, h.info(i, m.rotation.get(id)))
+	}
+	return infos
 }

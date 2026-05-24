@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 )
 
 const mjpegBoundary = "instachron"
@@ -26,7 +24,6 @@ func (s *apiServer) routes() http.Handler {
 	return mux
 }
 
-// handleIndex serves the embedded HTML viewer page.
 func (s *apiServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -36,35 +33,34 @@ func (s *apiServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Write(s.indexHTML)
 }
 
-// handleCameras returns a JSON array of discovered camera IDs.
+// handleCameras returns a JSON array of CameraInfo objects for every camera
+// seen since startup, including cameras that are currently offline.
 func (s *apiServer) handleCameras(w http.ResponseWriter, r *http.Request) {
-	ids := s.manager.knownCameras()
-	if ids == nil {
-		ids = []string{}
-	}
-	s.logger.Printf("GET /cameras -> %d camera(s)", len(ids))
+	cameras := s.manager.knownCameras()
+	s.logger.Printf("GET /cameras -> %d camera(s)", len(cameras))
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ids)
+	json.NewEncoder(w).Encode(cameras)
 }
 
-// handleSnapshot returns the latest JPEG frame for a camera as a single image.
+// handleSnapshot returns the latest JPEG frame held in memory for a camera.
+// Returns the last known frame even when the camera is currently offline.
 func (s *apiServer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	path := filepath.Join(s.manager.frameDir, id, "current-image.jpeg")
+	h := s.manager.hubLookup(id)
+	if h == nil {
+		http.NotFound(w, r)
+		return
+	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			http.NotFound(w, r)
-			return
-		}
-		http.Error(w, "failed to read frame", http.StatusInternalServerError)
+	f := h.latestFrame()
+	if f == nil {
+		http.Error(w, "no frame received yet", http.StatusServiceUnavailable)
 		return
 	}
 
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
-	w.Write(data)
+	w.Write(f)
 }
 
 // handleStream delivers an MJPEG (multipart/x-mixed-replace) stream for a
@@ -83,7 +79,7 @@ func (s *apiServer) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "multipart/x-mixed-replace;boundary="+mjpegBoundary)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
-	w.Header().Set("X-Accel-Buffering", "no") // prevent nginx buffering
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	ch := hub.subscribe()
 	defer hub.unsubscribe(ch)
@@ -123,21 +119,54 @@ const indexHTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>instachron</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0f0f0f; color: #ccc; font-family: monospace; }
-    header { display: flex; align-items: center; gap: 1rem; padding: .6rem 1rem;
-             border-bottom: 1px solid #222; font-size: .85rem; }
-    header strong { color: #fff; }
-    #status { color: #555; }
-    #grid { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; }
-    .cam { position: relative; flex: 1 1 480px; background: #1a1a1a; min-height: 120px; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0a0a; color: #ccc; font-family: ui-monospace, monospace; }
+
+    header {
+      display: flex; align-items: center; gap: 1rem; padding: .65rem 1.1rem;
+      border-bottom: 1px solid #1e1e1e;
+    }
+    header strong { color: #fff; font-size: .9rem; letter-spacing: .06em; }
+    #status { color: #555; font-size: .8rem; }
+
+    #grid { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; }
+
+    .cam {
+      position: relative; flex: 1 1 480px; background: #111;
+      min-height: 120px; overflow: hidden;
+    }
     .cam img { display: block; width: 100%; height: auto; }
-    .cam-label { position: absolute; bottom: 6px; left: 8px;
-                 background: rgba(0,0,0,.7); padding: 2px 8px;
-                 font-size: .7rem; border-radius: 2px; letter-spacing: .04em; }
-    .cam-actions { position: absolute; top: 6px; right: 8px; display: flex; gap: 4px; }
-    .cam-actions a { background: rgba(0,0,0,.7); padding: 2px 8px; font-size: .7rem;
-                     border-radius: 2px; color: #aaa; text-decoration: none; }
+
+    /* offline overlay */
+    .cam.offline img { filter: grayscale(1) brightness(.45); }
+    .cam.offline::after {
+      content: "OFFLINE";
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem; letter-spacing: .2em; color: #ff4444;
+      background: rgba(0,0,0,.35);
+      pointer-events: none;
+    }
+
+    .cam-label {
+      position: absolute; bottom: 6px; left: 8px;
+      background: rgba(0,0,0,.72); padding: 2px 8px;
+      font-size: .7rem; border-radius: 2px; letter-spacing: .04em;
+    }
+    .cam-label .dot {
+      display: inline-block; width: 7px; height: 7px;
+      border-radius: 50%; margin-right: 5px; vertical-align: middle;
+      background: #33cc66;
+    }
+    .cam.offline .cam-label .dot { background: #ff4444; }
+
+    .cam-actions {
+      position: absolute; top: 6px; right: 8px; display: flex; gap: 4px;
+    }
+    .cam-actions a {
+      background: rgba(0,0,0,.72); padding: 2px 8px; font-size: .7rem;
+      border-radius: 2px; color: #aaa; text-decoration: none;
+    }
     .cam-actions a:hover { color: #fff; }
   </style>
 </head>
@@ -148,41 +177,59 @@ const indexHTML = `<!DOCTYPE html>
   </header>
   <div id="grid"></div>
   <script>
-    const grid = document.getElementById('grid');
+    const grid   = document.getElementById('grid');
     const status = document.getElementById('status');
-    const known = new Set();
+    const known  = new Map(); // id -> div element
 
-    function addCamera(camera) {
-      const id = camera.id;
+    function addCamera(cam) {
       const div = document.createElement('div');
-      div.className = 'cam';
-      div.dataset.id = id;
+      div.className = 'cam' + (cam.online ? '' : ' offline');
+      div.dataset.id = cam.id;
+
       div.innerHTML =
-        '<img src="/cameras/' + id + '/stream" alt="camera ' + id + '">' +
-        '<span class="cam-label">camera ' + camera.index + ' · ' + id + '</span>' +
+        '<img src="/cameras/' + cam.id + '/stream" alt="camera ' + cam.id + '">' +
+        '<span class="cam-label"><span class="dot"></span>cam ' + cam.index + ' &middot; ' + cam.id + '</span>' +
         '<span class="cam-actions">' +
-          '<a href="/cameras/' + id + '/snapshot" target="_blank">snapshot</a>' +
-          '<a href="/cameras/' + id + '/stream" target="_blank">raw stream</a>' +
+          '<a href="/cameras/' + cam.id + '/snapshot" target="_blank">snapshot</a>' +
+          '<a href="/cameras/' + cam.id + '/stream" target="_blank">stream</a>' +
         '</span>';
+
       grid.appendChild(div);
+      known.set(cam.id, div);
+    }
+
+    function updateCamera(cam, div) {
+      if (cam.online) {
+        div.classList.remove('offline');
+      } else {
+        div.classList.add('offline');
+      }
     }
 
     function refresh() {
       fetch('/cameras')
         .then(r => r.json())
         .then(cameras => {
-          status.textContent = cameras.length === 0 ? 'no cameras found' : cameras.length + ' camera(s)';
-          cameras.forEach(camera => {
-            if (known.has(camera.id)) return;
-            known.add(camera.id);
-            addCamera(camera);
+          const onlineCount = cameras.filter(c => c.online).length;
+          status.textContent =
+            cameras.length === 0
+              ? 'no cameras found'
+              : onlineCount + ' online, ' + (cameras.length - onlineCount) + ' offline';
+
+          cameras.forEach(cam => {
+            const existing = known.get(cam.id);
+            if (existing) {
+              updateCamera(cam, existing);
+            } else {
+              addCamera(cam);
+            }
           });
         })
-        .catch(() => { status.textContent = 'error fetching camera list'; });
+        .catch(() => { status.textContent = 'connection error'; });
     }
 
     refresh();
-    setInterval(refresh, 5000);
+    setInterval(refresh, 3000);
   </script>
 </body>
 </html>`

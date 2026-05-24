@@ -1,18 +1,8 @@
 package main
 
 import (
-	"path/filepath"
 	"testing"
 )
-
-func TestCameraFrameDirUsesCameraID(t *testing.T) {
-	got := cameraFrameDir("/tmp/frames", 17)
-	want := filepath.Join("/tmp/frames", "17")
-
-	if got != want {
-		t.Fatalf("camera frame dir = %s, want %s", got, want)
-	}
-}
 
 func TestLoadConfigParsesCameraIDFlag(t *testing.T) {
 	t.Setenv("STREAM_URL", "rtmp://example/live/key")

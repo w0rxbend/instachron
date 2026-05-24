@@ -1,0 +1,176 @@
+package main
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"sync"
+)
+
+const (
+	ipcMagic1      byte = 0xAA
+	ipcMagic2      byte = 0xBB
+	ipcMsgFrame    byte = 0x01
+	ipcMsgOffline  byte = 0x02
+	ipcHeaderSize       = 11 // 2 magic + 1 type + 4 cameraID + 4 payloadSize
+	ipcChannelSize      = 64
+)
+
+type ipcMsg struct {
+	msgType  byte
+	cameraID uint32
+	payload  []byte
+}
+
+type consumerConn struct {
+	conn net.Conn
+	ch   chan ipcMsg
+}
+
+// framePublisher listens on a Unix domain socket and fans out IPC messages
+// to every connected consumer (camera-web-api, ffmpeg-streamer, etc.).
+// Multiple camera goroutines call publish concurrently; serialisation happens
+// inside each per-consumer writer goroutine, so the hot path never blocks.
+type framePublisher struct {
+	socketPath string
+	logger     *log.Logger
+
+	mu        sync.Mutex
+	consumers map[*consumerConn]struct{}
+}
+
+func newFramePublisher(socketPath string, logger *log.Logger) *framePublisher {
+	return &framePublisher{
+		socketPath: socketPath,
+		logger:     logger,
+		consumers:  make(map[*consumerConn]struct{}),
+	}
+}
+
+func (p *framePublisher) listen(ctx context.Context) error {
+	if err := os.Remove(p.socketPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale socket %s: %w", p.socketPath, err)
+	}
+
+	ln, err := net.Listen("unix", p.socketPath)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", p.socketPath, err)
+	}
+
+	var wg sync.WaitGroup
+
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+		p.mu.Lock()
+		for c := range p.consumers {
+			c.conn.Close()
+		}
+		p.mu.Unlock()
+	}()
+
+	defer func() {
+		ln.Close()
+		os.Remove(p.socketPath)
+		wg.Wait()
+	}()
+
+	p.logger.Printf("IPC publisher listening on %s", p.socketPath)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			p.logger.Printf("IPC accept error: %v", err)
+			continue
+		}
+
+		c := &consumerConn{
+			conn: conn,
+			ch:   make(chan ipcMsg, ipcChannelSize),
+		}
+
+		p.mu.Lock()
+		p.consumers[c] = struct{}{}
+		p.mu.Unlock()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.serveConsumer(ctx, c)
+		}()
+	}
+}
+
+func (p *framePublisher) serveConsumer(ctx context.Context, c *consumerConn) {
+	defer func() {
+		c.conn.Close()
+		p.mu.Lock()
+		delete(p.consumers, c)
+		p.mu.Unlock()
+		p.logger.Printf("IPC consumer disconnected: %s", c.conn.RemoteAddr())
+	}()
+
+	p.logger.Printf("IPC consumer connected: %s", c.conn.RemoteAddr())
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-c.ch:
+			if !ok {
+				return
+			}
+			if err := writeIPCMsg(c.conn, msg); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (p *framePublisher) publish(cameraID uint32, jpeg []byte) {
+	p.fanOut(ipcMsg{msgType: ipcMsgFrame, cameraID: cameraID, payload: jpeg})
+}
+
+func (p *framePublisher) publishOffline(cameraID uint32) {
+	p.fanOut(ipcMsg{msgType: ipcMsgOffline, cameraID: cameraID})
+}
+
+func (p *framePublisher) fanOut(msg ipcMsg) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for c := range p.consumers {
+		select {
+		case c.ch <- msg:
+		default:
+			// slow consumer — drop rather than block the camera ingestion path
+		}
+	}
+}
+
+// writeIPCMsg serialises an IPC message to the wire.
+// Frame format: magic(2) | type(1) | cameraID(4 BE) | payloadSize(4 BE) | payload
+func writeIPCMsg(conn net.Conn, msg ipcMsg) error {
+	hdr := [ipcHeaderSize]byte{}
+	hdr[0] = ipcMagic1
+	hdr[1] = ipcMagic2
+	hdr[2] = msg.msgType
+	binary.BigEndian.PutUint32(hdr[3:7], msg.cameraID)
+	binary.BigEndian.PutUint32(hdr[7:11], uint32(len(msg.payload)))
+
+	if _, err := conn.Write(hdr[:]); err != nil {
+		return err
+	}
+	if len(msg.payload) > 0 {
+		if _, err := conn.Write(msg.payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}

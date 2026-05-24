@@ -11,20 +11,20 @@ import (
 	"time"
 )
 
+
 const (
 	defaultAddr         = ":8080"
-	defaultFrameDir     = "./../frames"
 	defaultWebDir       = "./web"
-	defaultPollInterval = 250 * time.Millisecond
+	defaultSocketPath   = "/tmp/instachron/frames.sock"
+	defaultCameraConfig = "./cameras.json"
 )
 
 func main() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 
-	addr := envString("HTTP_ADDR", defaultAddr)
-	frameDir := envString("FRAME_OUTPUT_DIR", defaultFrameDir)
-	webDir := envString("WEB_DIR", defaultWebDir)
-	poll := envDuration("POLL_INTERVAL", defaultPollInterval)
+	addr       := envString("HTTP_ADDR", defaultAddr)
+	webDir     := envString("WEB_DIR", defaultWebDir)
+	socketPath := envString("IPC_SOCKET_PATH", defaultSocketPath)
 
 	indexHTML, err := os.ReadFile(webDir + "/index.html")
 	if err != nil {
@@ -34,13 +34,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	manager := newHubManager(frameDir, poll, ctx)
+	rotation, err := loadRotationConfig(envString("CAMERA_CONFIG", defaultCameraConfig), logger)
+	if err != nil {
+		logger.Fatalf("load rotation config: %v", err)
+	}
+
+	manager := newHubManager(ctx, rotation)
 	go manager.run()
+
+	reader := newSocketReader(socketPath, manager, logger)
+	go reader.run(ctx)
 
 	api := &apiServer{manager: manager, indexHTML: indexHTML, logger: logger}
 	httpSrv := &http.Server{
-		Addr:    addr,
-		Handler: api.routes(),
+		Addr:        addr,
+		Handler:     api.routes(),
+		ReadTimeout: 10 * time.Second,
 	}
 
 	go func() {
@@ -52,7 +61,7 @@ func main() {
 		}
 	}()
 
-	logger.Printf("camera-web-api listening on %s  frame-dir=%s  poll=%s", addr, frameDir, poll)
+	logger.Printf("camera-web-api listening on %s  ipc=%s", addr, socketPath)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("HTTP server failed: %v", err)
 	}
@@ -65,11 +74,3 @@ func envString(key, fallback string) string {
 	return fallback
 }
 
-func envDuration(key string, fallback time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return fallback
-}
