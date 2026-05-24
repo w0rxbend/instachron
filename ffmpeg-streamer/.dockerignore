@@ -1,0 +1,13 @@
+# compiled binary
+ffmpeg-streamer
+
+# test files not needed at runtime
+*_test.go
+
+# documentation
+README.md
+
+# development artifacts
+*.sock
+.git
+.gitignore

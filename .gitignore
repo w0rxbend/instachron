@@ -95,5 +95,11 @@ dashboard/.idea
 dashboard/.cache
 dashboard/.nuxt
 dashboard/node_modules
-**/frames
-frames
+
+# Unix domain sockets — created at runtime, never committed
+*.sock
+
+# Go workspace file — developer-local
+go.work
+go.work.sum
+
