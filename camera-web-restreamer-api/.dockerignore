@@ -1,0 +1,6 @@
+camera-web-restreamer-api
+*_test.go
+README.md
+*.sock
+.git
+.gitignore

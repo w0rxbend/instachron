@@ -1,0 +1,128 @@
+services:
+
+  # ── Core stack ─────────────────────────────────────────────────────────────
+  # tcp-camera-backend, camera-web-api, and ffmpeg-streamer all bind the same
+  # unix socket via the shared "ipc" volume at /tmp/instachron/frames.sock.
+
+  tcp-camera-backend:
+    build:
+      context: ./tcp-camera-backend
+    ports:
+      - "${TCP_PORT:-5000}:5000"
+    volumes:
+      - ipc:/tmp/instachron
+    environment:
+      TCP_ADDR: "0.0.0.0:5000"
+      IPC_SOCKET_PATH: /tmp/instachron/frames.sock
+    restart: unless-stopped
+
+  camera-web-api:
+    build:
+      context: ./camera-web-api
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - ipc:/tmp/instachron
+      # Uncomment to override the default cameras.json rotation config:
+      # - ./camera-web-api/cameras.json:/app/cameras.json:ro
+    environment:
+      HTTP_ADDR: ":8080"
+      IPC_SOCKET_PATH: /tmp/instachron/frames.sock
+    depends_on:
+      - tcp-camera-backend
+    restart: unless-stopped
+
+  # ── Restream layer ──────────────────────────────────────────────────────────
+
+  camera-web-restreamer-api:
+    build:
+      context: ./camera-web-restreamer-api
+    ports:
+      - "${RESTREAMER_PORT:-8090}:8090"
+    environment:
+      HTTP_ADDR: ":8090"
+      ORIGIN_URL: "http://camera-web-api:8080"
+    depends_on:
+      - camera-web-api
+    restart: unless-stopped
+
+  camera-web-restream-enhancer-api:
+    build:
+      context: ./camera-web-restream-enhancer-api
+    ports:
+      - "${ENHANCER_PORT:-8091}:8091"
+    environment:
+      HTTP_ADDR: ":8091"
+      ORIGIN_URL: "http://camera-web-api:8080"
+      SHARPEN: "${SHARPEN:-1.0}"
+      DARK_THRESHOLD: "${DARK_THRESHOLD:-0.35}"
+      BRIGHTNESS_MAX: "${BRIGHTNESS_MAX:-30.0}"
+      CONTRAST_MAX: "${CONTRAST_MAX:-25.0}"
+      JPEG_QUALITY: "${JPEG_QUALITY:-85}"
+    depends_on:
+      - camera-web-api
+    restart: unless-stopped
+
+  # ── Optional: FSRCNN x2 upscaler ───────────────────────────────────────────
+  # Requires:
+  #   1. An FSRCNN x2 ONNX model at ./camera-web-restream-FSRCNN-api/models/fsrcnn_x2.onnx
+  #   2. profile "fsrcnn": docker compose --profile fsrcnn up
+  # ORT library is bundled in the image (downloaded during build).
+  # Override ORT_VERSION build arg to change the bundled library version.
+
+  camera-web-restream-FSRCNN-api:
+    build:
+      context: ./camera-web-restream-FSRCNN-api
+      args:
+        ORT_VERSION: "${ORT_VERSION:-1.20.1}"
+    ports:
+      - "${FSRCNN_PORT:-8092}:8092"
+    volumes:
+      - ./camera-web-restream-FSRCNN-api/models:/models:ro
+    environment:
+      HTTP_ADDR: ":8092"
+      ORIGIN_URL: "http://camera-web-api:8080"
+      MODEL_PATH: /models/fsrcnn_x2.onnx
+      SCALE_FACTOR: "${SCALE_FACTOR:-2}"
+      JPEG_QUALITY: "${FSRCNN_JPEG_QUALITY:-85}"
+      NUM_WORKERS: "${FSRCNN_WORKERS:-}"
+      INTRA_OP_THREADS: "${INTRA_OP_THREADS:-2}"
+      WARMUP_RUNS: "${WARMUP_RUNS:-5}"
+      METRICS_INTERVAL_SEC: "${METRICS_INTERVAL_SEC:-60}"
+    depends_on:
+      - camera-web-api
+    profiles:
+      - fsrcnn
+    restart: unless-stopped
+
+  # ── Optional: ffmpeg RTMP streamer ──────────────────────────────────────────
+  # Requires a stream destination. Set exactly one of:
+  #   TWITCH_STREAM_KEY, YOUTUBE_STREAM_KEY, STREAM_URL, or RTMP_URL
+  # Activate with: docker compose --profile streaming up
+
+  ffmpeg-streamer:
+    build:
+      context: ./ffmpeg-streamer
+    volumes:
+      - ipc:/tmp/instachron
+    environment:
+      IPC_SOCKET_PATH: /tmp/instachron/frames.sock
+      STREAM_URL: "${STREAM_URL:-}"
+      RTMP_URL: "${RTMP_URL:-}"
+      TWITCH_STREAM_KEY: "${TWITCH_STREAM_KEY:-}"
+      YOUTUBE_STREAM_KEY: "${YOUTUBE_STREAM_KEY:-}"
+      CAMERA_ID: "${CAMERA_ID:-0}"
+      MERGE_ALL: "${MERGE_ALL:-false}"
+      STREAM_FRAME_RATE: "${STREAM_FRAME_RATE:-10}"
+      CELL_WIDTH: "${CELL_WIDTH:-320}"
+      CELL_HEIGHT: "${CELL_HEIGHT:-240}"
+    depends_on:
+      - tcp-camera-backend
+    profiles:
+      - streaming
+    restart: unless-stopped
+
+volumes:
+  # Shared unix socket directory for tcp-camera-backend, camera-web-api,
+  # and ffmpeg-streamer. The socket file lives at /tmp/instachron/frames.sock.
+  ipc:
