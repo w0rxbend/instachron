@@ -1,3 +1,3 @@
-module github.com/w0rxbend/instachron/pkg/cameras
+module github.com/w0rxbend/instachron/shared/cameras
 
 go 1.22.5

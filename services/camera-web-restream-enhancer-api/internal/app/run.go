@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/w0rxbend/instachron/pkg/restream"
+	"github.com/w0rxbend/instachron/shared/restream"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-enhancer-api/internal/enhance"
 )
 

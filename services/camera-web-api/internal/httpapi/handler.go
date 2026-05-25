@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/w0rxbend/instachron/pkg/mjpeg"
+	"github.com/w0rxbend/instachron/shared/mjpeg"
 	"github.com/w0rxbend/instachron/services/camera-web-api/internal/camera"
 	"github.com/w0rxbend/instachron/services/camera-web-api/internal/rotation"
 )

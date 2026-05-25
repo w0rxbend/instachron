@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/w0rxbend/instachron/pkg/cameras"
+	"github.com/w0rxbend/instachron/shared/cameras"
 )
 
 const offlineThreshold = 5 * time.Second

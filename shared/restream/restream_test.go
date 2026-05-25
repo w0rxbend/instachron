@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/w0rxbend/instachron/pkg/restream"
+	"github.com/w0rxbend/instachron/shared/restream"
 )
 
 // --- Hub tests ---

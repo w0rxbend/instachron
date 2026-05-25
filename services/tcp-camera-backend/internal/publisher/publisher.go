@@ -8,7 +8,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/w0rxbend/instachron/pkg/frameipc"
+	"github.com/w0rxbend/instachron/shared/frameipc"
 )
 
 const ipcChannelSize = 64

@@ -5,8 +5,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/w0rxbend/instachron/pkg/mjpeg"
-	"github.com/w0rxbend/instachron/pkg/restream"
+	"github.com/w0rxbend/instachron/shared/mjpeg"
+	"github.com/w0rxbend/instachron/shared/restream"
 )
 
 type apiServer struct {

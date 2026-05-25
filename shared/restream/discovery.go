@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/w0rxbend/instachron/pkg/cameras"
+	"github.com/w0rxbend/instachron/shared/cameras"
 )
 
 const discoveryInterval = 5 * time.Second

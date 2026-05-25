@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/w0rxbend/instachron/pkg/frameipc"
+	"github.com/w0rxbend/instachron/shared/frameipc"
 )
 
 func TestRoundTrip(t *testing.T) {

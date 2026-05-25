@@ -9,7 +9,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/w0rxbend/instachron/pkg/frameipc"
+	"github.com/w0rxbend/instachron/shared/frameipc"
 )
 
 const reconnDelay = time.Second

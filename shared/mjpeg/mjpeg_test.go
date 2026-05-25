@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/w0rxbend/instachron/pkg/mjpeg"
+	"github.com/w0rxbend/instachron/shared/mjpeg"
 )
 
 func TestWriteFrameContainsBoundary(t *testing.T) {

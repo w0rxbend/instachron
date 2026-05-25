@@ -1,10 +1,10 @@
 go 1.22.5
 
 use (
-	./pkg/cameras
-	./pkg/frameipc
-	./pkg/mjpeg
-	./pkg/restream
+	./shared/cameras
+	./shared/frameipc
+	./shared/mjpeg
+	./shared/restream
 	./services/camera-web-api
 	./services/camera-web-restream-enhancer-api
 	./services/camera-web-restream-fsrcnn-api

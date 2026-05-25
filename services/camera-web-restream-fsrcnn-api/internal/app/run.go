@@ -14,7 +14,7 @@ import (
 
 	ort "github.com/yalue/onnxruntime_go"
 
-	"github.com/w0rxbend/instachron/pkg/restream"
+	"github.com/w0rxbend/instachron/shared/restream"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/fsrcnn"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/metrics"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/pipeline"
