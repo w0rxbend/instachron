@@ -9,6 +9,8 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/disintegration/imaging"
 	ort "github.com/yalue/onnxruntime_go"
@@ -16,17 +18,18 @@ import (
 
 // Config holds detector parameters loaded from config.json.
 type Config struct {
-	ModelPath     string  `json:"model_path"`
-	OrtLibPath    string  `json:"ort_lib_path"`   // path to libonnxruntime.so; "" = default "onnxruntime.so"
-	InputName     string  `json:"input_name"`     // default "images"
-	OutputName    string  `json:"output_name"`    // default "output0"
-	ConfThreshold float32 `json:"conf_threshold"` // default 0.5
-	NMSThreshold  float32 `json:"nms_threshold"`  // default 0.45
-	InputWidth    int     `json:"input_width"`    // default 640
-	InputHeight   int     `json:"input_height"`   // default 640
-	NumClasses    int     `json:"num_classes"`    // default 80
-	JPEGQuality   int     `json:"jpeg_quality"`   // default 85
-	Debug         bool    `json:"debug"`          // log max score and detection count per frame
+	ModelPath      string   `json:"model_path"`
+	OrtLibPath     string   `json:"ort_lib_path"`    // path to libonnxruntime.so; "" = default "onnxruntime.so"
+	InputName      string   `json:"input_name"`      // default "images"
+	OutputName     string   `json:"output_name"`     // default "output0"
+	ConfThreshold  float32  `json:"conf_threshold"`  // default 0.25
+	NMSThreshold   float32  `json:"nms_threshold"`   // default 0.45
+	InputWidth     int      `json:"input_width"`     // default 640
+	InputHeight    int      `json:"input_height"`    // default 640
+	NumClasses     int      `json:"num_classes"`     // default 80
+	JPEGQuality    int      `json:"jpeg_quality"`    // default 85
+	AllowedClasses []string `json:"allowed_classes"` // if non-empty, only these class names are kept
+	Debug          bool     `json:"debug"`
 }
 
 func DefaultConfig() Config {
@@ -35,7 +38,7 @@ func DefaultConfig() Config {
 		OrtLibPath:    "libonnxruntime.so",
 		InputName:     "images",
 		OutputName:    "output0",
-		ConfThreshold: 0.5,
+		ConfThreshold: 0.25,
 		NMSThreshold:  0.45,
 		InputWidth:    640,
 		InputHeight:   640,
@@ -63,17 +66,27 @@ type OutputLayout struct {
 	Transposed  bool // true = [1, numBoxes, numChannels]; false = [1, numChannels, numBoxes]
 }
 
-// Detector runs YOLOv8 inference. Process is safe for concurrent callers —
-// if inference is already running a frame is passed through unchanged (no queueing).
+// Detector runs YOLOv8 inference. Process is safe for concurrent callers.
+// While inference is in progress, the last annotated frame is served instead
+// of the raw input, so the stream always shows the most recent detections.
 type Detector struct {
 	cfg          Config
 	session      *ort.AdvancedSession
 	inputTensor  *ort.Tensor[float32]
 	outputTensor *ort.Tensor[float32]
 	layout       OutputLayout
+	allowedIDs   map[int]struct{} // nil = all classes allowed
 	logger       *log.Logger
 	mu           sync.Mutex
 	bufPool      sync.Pool
+
+	lastAnnot atomic.Pointer[[]byte] // most recent annotated JPEG
+
+	// periodic stats (logged every ~10s)
+	frameIn  atomic.Int64
+	frameDet atomic.Int64
+	frameDrp atomic.Int64
+	lastLog  atomic.Int64 // UnixNano of last stats log
 }
 
 var ortOnce sync.Once
@@ -95,13 +108,14 @@ func New(cfg Config, logger *log.Logger) (*Detector, error) {
 		return nil, fmt.Errorf("ort init: %w", initErr)
 	}
 
-	// Query the model's actual output shape so we allocate the tensor correctly
-	// and index the data correctly regardless of export format.
-	// YOLOv8 can export as [1, 4+classes, boxes] or transposed [1, boxes, 4+classes].
-	layout, err := probeOutputLayout(cfg)
+	// Probe the model to discover actual tensor names and output shape.
+	// This handles any YOLOv8 export variant without manual name configuration.
+	probe, err := probeModel(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("probe model output: %w", err)
+		return nil, fmt.Errorf("probe model: %w", err)
 	}
+	layout := probe.Layout
+	logger.Printf("model probe: input=%q output=%q shape=%+v", probe.InputName, probe.OutputName, layout)
 
 	inputShape := ort.NewShape(1, 3, int64(cfg.InputHeight), int64(cfg.InputWidth))
 	inputTensor, err := ort.NewEmptyTensor[float32](inputShape)
@@ -123,8 +137,8 @@ func New(cfg Config, logger *log.Logger) (*Detector, error) {
 
 	session, err := ort.NewAdvancedSession(
 		cfg.ModelPath,
-		[]string{cfg.InputName},
-		[]string{cfg.OutputName},
+		[]string{probe.InputName},
+		[]string{probe.OutputName},
 		[]ort.Value{inputTensor},
 		[]ort.Value{outputTensor},
 		nil,
@@ -135,45 +149,88 @@ func New(cfg Config, logger *log.Logger) (*Detector, error) {
 		return nil, fmt.Errorf("session: %w", err)
 	}
 
-	return &Detector{
+	var allowedIDs map[int]struct{}
+	if len(cfg.AllowedClasses) > 0 {
+		allowedIDs = make(map[int]struct{}, len(cfg.AllowedClasses))
+		nameToID := make(map[string]int, len(CocoClasses))
+		for i, name := range CocoClasses {
+			nameToID[name] = i
+		}
+		for _, name := range cfg.AllowedClasses {
+			if id, ok := nameToID[name]; ok {
+				allowedIDs[id] = struct{}{}
+			} else {
+				logger.Printf("allowed_classes: unknown class name %q (ignored)", name)
+			}
+		}
+		logger.Printf("class filter: only showing %v", cfg.AllowedClasses)
+	}
+
+	d := &Detector{
 		cfg:          cfg,
 		session:      session,
 		inputTensor:  inputTensor,
 		outputTensor: outputTensor,
 		layout:       layout,
+		allowedIDs:   allowedIDs,
 		logger:       logger,
 		bufPool:      sync.Pool{New: func() any { return new(bytes.Buffer) }},
-	}, nil
+	}
+	d.lastLog.Store(time.Now().UnixNano())
+	return d, nil
 }
 
-// probeOutputLayout inspects the model file to determine the actual output tensor
-// shape and returns the appropriate indexing layout.
-func probeOutputLayout(cfg Config) (OutputLayout, error) {
-	_, outputs, err := ort.GetInputOutputInfo(cfg.ModelPath)
+type modelProbe struct {
+	InputName  string
+	OutputName string
+	Layout     OutputLayout
+}
+
+// probeModel inspects the ONNX model file to discover the actual input/output
+// tensor names and output shape, so the session works regardless of export naming.
+func probeModel(cfg Config) (modelProbe, error) {
+	inputs, outputs, err := ort.GetInputOutputInfo(cfg.ModelPath)
 	if err != nil {
-		return OutputLayout{}, fmt.Errorf("GetInputOutputInfo: %w", err)
+		return modelProbe{}, fmt.Errorf("GetInputOutputInfo: %w", err)
+	}
+	if len(inputs) == 0 {
+		return modelProbe{}, fmt.Errorf("model has no inputs")
 	}
 	if len(outputs) == 0 {
-		return OutputLayout{}, fmt.Errorf("model has no outputs")
+		return modelProbe{}, fmt.Errorf("model has no outputs")
+	}
+
+	inputName := inputs[0].Name
+	outputName := outputs[0].Name
+
+	// Override with config values if explicitly set (non-default)
+	if cfg.InputName != "" && cfg.InputName != "images" {
+		inputName = cfg.InputName
+	}
+	if cfg.OutputName != "" && cfg.OutputName != "output0" {
+		outputName = cfg.OutputName
 	}
 
 	dims := outputs[0].Dimensions
 	if len(dims) != 3 {
-		return OutputLayout{}, fmt.Errorf("expected 3-D output, got %v", dims)
+		return modelProbe{}, fmt.Errorf("expected 3-D output, got %v", dims)
 	}
 	// dims = [batch, A, B]; batch is always 1
 	a, b := int(dims[1]), int(dims[2])
 	numChannels := 4 + cfg.NumClasses
 
+	var layout OutputLayout
 	switch {
 	case a == numChannels: // [1, 84, 8400] — channel-first
-		return OutputLayout{NumBoxes: b, NumChannels: a, Transposed: false}, nil
+		layout = OutputLayout{NumBoxes: b, NumChannels: a, Transposed: false}
 	case b == numChannels: // [1, 8400, 84] — transposed / boxes-first
-		return OutputLayout{NumBoxes: a, NumChannels: b, Transposed: true}, nil
+		layout = OutputLayout{NumBoxes: a, NumChannels: b, Transposed: true}
 	default:
-		return OutputLayout{}, fmt.Errorf(
+		return modelProbe{}, fmt.Errorf(
 			"output shape %v doesn't match expected numChannels=%d", dims, numChannels)
 	}
+
+	return modelProbe{InputName: inputName, OutputName: outputName, Layout: layout}, nil
 }
 
 // Layout returns the probed output layout (useful for logging).
@@ -194,20 +251,59 @@ func (d *Detector) Detect(jpeg []byte) ([]Detection, []byte, error) {
 	return d.infer(jpeg)
 }
 
-// Process implements restream.Processor. If inference is already in progress the
-// original frame is passed through unchanged to keep stream latency bounded.
+// Process implements restream.Processor.
+// When inference is already running the last annotated frame is served instead
+// of the raw input so viewers always see the most recent bounding boxes.
 func (d *Detector) Process(jpeg []byte, push func([]byte)) {
+	d.frameIn.Add(1)
+
 	if !d.mu.TryLock() {
-		push(jpeg)
+		d.frameDrp.Add(1)
+		if last := d.lastAnnot.Load(); last != nil {
+			push(*last)
+		} else {
+			push(jpeg)
+		}
+		d.logStats()
 		return
 	}
 	defer d.mu.Unlock()
-	_, annotated, err := d.infer(jpeg)
-	if err != nil || annotated == nil {
+
+	dets, annotated, err := d.infer(jpeg)
+	if err != nil {
+		d.logger.Printf("detect: inference error: %v", err)
 		push(jpeg)
+		d.logStats()
 		return
 	}
+	if annotated == nil {
+		push(jpeg)
+		d.logStats()
+		return
+	}
+	if len(dets) > 0 {
+		d.frameDet.Add(1)
+	}
+	d.lastAnnot.Store(&annotated)
 	push(annotated)
+	d.logStats()
+}
+
+// logStats prints a summary line every 10 seconds.
+func (d *Detector) logStats() {
+	now := time.Now().UnixNano()
+	last := d.lastLog.Load()
+	if now-last < int64(10*time.Second) {
+		return
+	}
+	if !d.lastLog.CompareAndSwap(last, now) {
+		return
+	}
+	in := d.frameIn.Load()
+	det := d.frameDet.Load()
+	drp := d.frameDrp.Load()
+	d.logger.Printf("detect stats: %d frames in, %d with detections, %d deferred to cache (conf_threshold=%.2f)",
+		in, det, drp, d.cfg.ConfThreshold)
 }
 
 // infer is the internal pipeline; caller must hold d.mu.
@@ -238,6 +334,16 @@ func (d *Detector) infer(jpeg []byte) ([]Detection, []byte, error) {
 
 	dets := parseOutput(raw, d.layout, d.cfg.ConfThreshold, d.cfg.NMSThreshold,
 		lb, src.Bounds().Dx(), src.Bounds().Dy())
+
+	if d.allowedIDs != nil {
+		filtered := dets[:0]
+		for _, det := range dets {
+			if _, ok := d.allowedIDs[det.ClassID]; ok {
+				filtered = append(filtered, det)
+			}
+		}
+		dets = filtered
+	}
 
 	if d.cfg.Debug {
 		d.logger.Printf("detect debug: %d detection(s) (conf_threshold=%.2f)", len(dets), d.cfg.ConfThreshold)

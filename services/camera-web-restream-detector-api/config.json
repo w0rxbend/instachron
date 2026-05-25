@@ -9,5 +9,6 @@
   "input_height": 640,
   "num_classes": 80,
   "jpeg_quality": 85,
+  "allowed_classes": ["person"],
   "debug": true
 }

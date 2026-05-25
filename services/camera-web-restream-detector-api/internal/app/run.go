@@ -25,9 +25,9 @@ const (
 func Run() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 
-	addr := envString("HTTP_ADDR", defaultAddr)
+	addr := tcpAddr(envString("HTTP_ADDR", defaultAddr))
 	upstreamTCPAddr := envString("UPSTREAM_TCP_ADDR", defaultUpstreamAddr)
-	tcpAddr := envString("TCP_ADDR", defaultTCPAddr)
+	tcpListenAddr := tcpAddr(envString("TCP_ADDR", defaultTCPAddr))
 	tcpEnabled := envString("TCP_ENABLED", "true") != "false"
 	configPath := envString("CONFIG_FILE", "config.json")
 
@@ -96,7 +96,7 @@ func Run() {
 
 	if tcpEnabled {
 		tcpSrv := restream.NewTCPServer(restream.TCPServerConfig{
-			ListenAddr:   tcpAddr,
+			ListenAddr:   tcpListenAddr,
 			MaxClients:   64,
 			WriteTimeout: 2 * time.Second,
 		}, broadcaster, logger)
@@ -144,7 +144,7 @@ func Run() {
 	}()
 
 	logger.Printf("camera-web-restream-detector-api listening on %s  upstream=%s  tcp=%s (enabled=%v)",
-		addr, upstreamTCPAddr, tcpAddr, tcpEnabled)
+		addr, upstreamTCPAddr, tcpListenAddr, tcpEnabled)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("HTTP server failed: %v", err)
 	}
@@ -155,4 +155,15 @@ func envString(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// tcpAddr normalises a listen address: if v is a bare port number (no colon),
+// prepends ":" so net.Listen doesn't reject it.
+func tcpAddr(v string) string {
+	for _, c := range v {
+		if c == ':' {
+			return v
+		}
+	}
+	return ":" + v
 }
