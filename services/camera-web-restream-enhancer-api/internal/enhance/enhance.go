@@ -1,85 +1,185 @@
-// Package enhance applies brightness, contrast, and sharpness corrections to JPEG frames.
+// Package enhance applies image processing filters to JPEG frames.
 package enhance
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
+	"image/color"
+	"os"
 	"sync"
 
+	"github.com/disintegration/gift"
 	"github.com/disintegration/imaging"
 )
 
-// Config holds the tunable parameters for the image enhancement pipeline.
+// Config holds the processing parameters for one camera.
+// Filters is an ordered list of registry keys to apply after the adaptive
+// dark correction pass. Unknown keys are silently skipped.
 type Config struct {
-	// Sharpen is the unsharp-mask sigma passed to imaging.Sharpen.
-	// 0 disables sharpening. Typical range: 0.5–3.0.
-	Sharpen float64
+	DarkThreshold float64  `json:"dark_threshold"`
+	BrightnessMax float64  `json:"brightness_max"`
+	ContrastMax   float64  `json:"contrast_max"`
+	JPEGQuality   int      `json:"jpeg_quality"`
+	Filters       []string `json:"filters"`
+}
 
-	// DarkThreshold is the average BT.601 luminance (0–1) below which adaptive
-	// brightness and contrast corrections are applied. 0 disables adaptive mode.
-	DarkThreshold float64
+// CameraConfigs holds a default pipeline config and optional per-camera overrides.
+type CameraConfigs struct {
+	Default Config            `json:"default"`
+	Cameras map[string]Config `json:"cameras"`
+}
 
-	// BrightnessMax is the maximum brightness adjustment (0–100 %) applied when
-	// the image is completely black (lum == 0). Scales linearly with darkness.
-	BrightnessMax float64
+// DefaultCameraConfigs returns a baseline CameraConfigs with no per-camera overrides.
+func DefaultCameraConfigs() CameraConfigs {
+	return CameraConfigs{
+		Default: Config{
+			DarkThreshold: 0.35,
+			BrightnessMax: 35.0,
+			ContrastMax:   35.0,
+			JPEGQuality:   90,
+			Filters:       []string{"gaussian_blur", "unsharp_mask"},
+		},
+		Cameras: make(map[string]Config),
+	}
+}
 
-	// ContrastMax is the maximum contrast adjustment (0–100 %) applied under
-	// the same conditions as BrightnessMax.
-	ContrastMax float64
+// LoadCameraConfigs reads a JSON file at path and returns the parsed CameraConfigs.
+func LoadCameraConfigs(path string) (CameraConfigs, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CameraConfigs{}, err
+	}
+	var cfgs CameraConfigs
+	if err := json.Unmarshal(data, &cfgs); err != nil {
+		return CameraConfigs{}, err
+	}
+	if cfgs.Cameras == nil {
+		cfgs.Cameras = make(map[string]Config)
+	}
+	return cfgs, nil
+}
 
-	// JPEGQuality is the re-encode quality (1–100) for output frames.
-	JPEGQuality int
+// filterRegistry is the built-in set of named gift filters available to configs.
+// All filter instances are stateless and safe for concurrent use.
+var filterRegistry = map[string]gift.Filter{
+	"resize":              gift.Resize(100, 0, gift.LanczosResampling),
+	"crop_to_size":        gift.CropToSize(100, 100, gift.LeftAnchor),
+	"rotate_180":          gift.Rotate180(),
+	"rotate_30":           gift.Rotate(30, color.Transparent, gift.CubicInterpolation),
+	"brightness_increase": gift.Brightness(30),
+	"brightness_decrease": gift.Brightness(-30),
+	"contrast_increase":   gift.Contrast(30),
+	"contrast_decrease":   gift.Contrast(-30),
+	"saturation_increase": gift.Saturation(50),
+	"saturation_decrease": gift.Saturation(-50),
+	"gamma_1.5":           gift.Gamma(1.5),
+	"gamma_0.5":           gift.Gamma(0.5),
+	"gaussian_blur":       gift.GaussianBlur(1),
+	"unsharp_mask":        gift.UnsharpMask(1, 1, 0),
+	"sigmoid":             gift.Sigmoid(0.5, 7),
+	"pixelate":            gift.Pixelate(5),
+	"colorize":            gift.Colorize(240, 50, 100),
+	"grayscale":           gift.Grayscale(),
+	"sepia":               gift.Sepia(100),
+	"invert":              gift.Invert(),
+	"mean":                gift.Mean(5, true),
+	"median":              gift.Median(5, true),
+	"minimum":             gift.Minimum(5, true),
+	"maximum":             gift.Maximum(5, true),
+	"hue_rotate":          gift.Hue(45),
+	"color_balance":       gift.ColorBalance(10, -10, -10),
+	"color_func": gift.ColorFunc(
+		func(r0, g0, b0, a0 float32) (r, g, b, a float32) {
+			r = 1 - r0
+			g = g0 + 0.1
+			b = 0
+			a = a0
+			return r, g, b, a
+		},
+	),
+	"convolution_emboss": gift.Convolution(
+		[]float32{
+			-1, -1, 0,
+			-1, 1, 1,
+			0, 1, 1,
+		},
+		false, false, false, 0.0,
+	),
 }
 
 // Processor applies the enhancement pipeline to raw JPEG frames.
-// It implements restream.Processor — Process is safe for concurrent use.
+// Process and ProcessCamera are safe for concurrent use.
 type Processor struct {
-	cfg     Config
+	cfgs    CameraConfigs
 	bufPool sync.Pool
 }
 
-// New returns a Processor configured with cfg.
-func New(cfg Config) *Processor {
+// New returns a Processor driven by cfgs.
+func New(cfgs CameraConfigs) *Processor {
 	return &Processor{
-		cfg:     cfg,
+		cfgs:    cfgs,
 		bufPool: sync.Pool{New: func() any { return new(bytes.Buffer) }},
 	}
 }
 
-// Process implements restream.Processor. It enhances jpeg and calls push with
-// the result. On any error the original frame is passed through unchanged.
+// Process implements restream.Processor using the default config.
 func (e *Processor) Process(jpeg []byte, push func([]byte)) {
-	push(e.process(jpeg))
+	push(e.process(jpeg, e.cfgs.Default))
 }
 
-func (e *Processor) process(jpeg []byte) []byte {
+// ProcessCamera looks up the per-camera config (falling back to Default) and
+// enhances jpeg, calling push with the result.
+func (e *Processor) ProcessCamera(cameraID string, jpeg []byte, push func([]byte)) {
+	push(e.process(jpeg, e.configFor(cameraID)))
+}
+
+func (e *Processor) configFor(cameraID string) Config {
+	if cfg, ok := e.cfgs.Cameras[cameraID]; ok {
+		return cfg
+	}
+	return e.cfgs.Default
+}
+
+func (e *Processor) process(jpeg []byte, cfg Config) []byte {
 	img, err := imaging.Decode(bytes.NewReader(jpeg))
 	if err != nil {
 		return jpeg
 	}
 
-	if e.cfg.DarkThreshold > 0 {
+	// adaptive dark correction
+	if cfg.DarkThreshold > 0 {
 		lum := avgLuminance32(img)
-		if lum < e.cfg.DarkThreshold {
-			factor := (e.cfg.DarkThreshold - lum) / e.cfg.DarkThreshold
-			if e.cfg.BrightnessMax > 0 {
-				img = imaging.AdjustBrightness(img, factor*e.cfg.BrightnessMax)
+		if lum < cfg.DarkThreshold {
+			factor := (cfg.DarkThreshold - lum) / cfg.DarkThreshold
+			if cfg.BrightnessMax > 0 {
+				img = imaging.AdjustBrightness(img, factor*cfg.BrightnessMax)
 			}
-			if e.cfg.ContrastMax > 0 {
-				img = imaging.AdjustContrast(img, factor*e.cfg.ContrastMax)
+			if cfg.ContrastMax > 0 {
+				img = imaging.AdjustContrast(img, factor*cfg.ContrastMax)
 			}
 		}
 	}
 
-	if e.cfg.Sharpen > 0 {
-		img = imaging.Sharpen(img, e.cfg.Sharpen)
+	// gift filter chain
+	var filters []gift.Filter
+	for _, key := range cfg.Filters {
+		if f, ok := filterRegistry[key]; ok {
+			filters = append(filters, f)
+		}
+	}
+	if len(filters) > 0 {
+		g := gift.New(filters...)
+		dst := image.NewNRGBA(g.Bounds(img.Bounds()))
+		g.Draw(dst, img)
+		img = dst
 	}
 
 	buf := e.bufPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer e.bufPool.Put(buf)
 
-	if err := imaging.Encode(buf, img, imaging.JPEG, imaging.JPEGQuality(e.cfg.JPEGQuality)); err != nil {
+	if err := imaging.Encode(buf, img, imaging.JPEG, imaging.JPEGQuality(cfg.JPEGQuality)); err != nil {
 		return jpeg
 	}
 

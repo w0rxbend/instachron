@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/disintegration/gift v1.2.1 // indirect
 	github.com/w0rxbend/instachron/shared/cameras v0.0.0 // indirect
 	golang.org/x/image v0.0.0-20191009234506-e7c1f5e7dbb8 // indirect
 )

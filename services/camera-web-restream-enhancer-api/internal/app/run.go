@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -31,22 +30,20 @@ func Run() {
 	tcpAddr := envString("TCP_ADDR", defaultTCPAddr)
 	tcpEnabled := envString("TCP_ENABLED", "true") != "false"
 
-	cfg := enhance.Config{
-		Sharpen:       envFloat("SHARPEN", 1.0),
-		DarkThreshold: envFloat("DARK_THRESHOLD", 0.35),
-		BrightnessMax: envFloat("BRIGHTNESS_MAX", 30.0),
-		ContrastMax:   envFloat("CONTRAST_MAX", 25.0),
-		JPEGQuality:   envInt("JPEG_QUALITY", 85),
+	configPath := envString("CONFIG_FILE", "config.json")
+	cameraCfgs, err := enhance.LoadCameraConfigs(configPath)
+	if err != nil {
+		logger.Printf("config file %q not found (%v), using built-in defaults", configPath, err)
+		cameraCfgs = enhance.DefaultCameraConfigs()
+	} else {
+		logger.Printf("loaded enhancer config from %s (%d camera overrides)", configPath, len(cameraCfgs.Cameras))
 	}
-
-	logger.Printf("enhancer config: sharpen=%.2f dark_threshold=%.2f brightness_max=%.1f contrast_max=%.1f jpeg_quality=%d",
-		cfg.Sharpen, cfg.DarkThreshold, cfg.BrightnessMax, cfg.ContrastMax, cfg.JPEGQuality)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	manager := restream.NewManager()
-	proc := enhance.New(cfg)
+	proc := enhance.New(cameraCfgs)
 
 	go func() {
 		ticker := time.NewTicker(time.Second)
@@ -81,7 +78,7 @@ func Run() {
 		restream.TCPUpstreamConfig{Addr: upstreamTCPAddr},
 		func(f streamproto.Frame) {
 			id := fmt.Sprintf("%d", f.CameraID)
-			proc.Process(f.Payload, func(processed []byte) {
+			proc.ProcessCamera(id, f.Payload, func(processed []byte) {
 				pf := streamproto.Frame{
 					CameraID:  f.CameraID,
 					Timestamp: f.Timestamp,
@@ -127,20 +124,3 @@ func envString(key, fallback string) string {
 	return fallback
 }
 
-func envFloat(key string, fallback float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return fallback
-}
