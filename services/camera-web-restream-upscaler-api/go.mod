@@ -8,7 +8,6 @@ require (
 	github.com/w0rxbend/instachron/shared/restream v0.0.0
 	github.com/w0rxbend/instachron/shared/streamproto v0.0.0
 	github.com/w0rxbend/instachron/shared/webui v0.0.0
-	github.com/yalue/onnxruntime_go v1.30.1
 )
 
 require (

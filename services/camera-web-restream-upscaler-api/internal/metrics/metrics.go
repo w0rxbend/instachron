@@ -1,4 +1,4 @@
-// Package metrics accumulates pipeline timing counters for the FSRCNN service.
+// Package metrics accumulates pipeline timing counters for the upscale service.
 package metrics
 
 import (
@@ -11,14 +11,12 @@ import (
 // Pipeline accumulates per-operation nanosecond totals and frame counts using
 // lock-free atomics. A background goroutine logs rolling averages.
 type Pipeline struct {
-	frames        atomic.Int64
-	dropped       atomic.Int64
-	decodeNs      atomic.Int64
-	preprocessNs  atomic.Int64
-	inferenceNs   atomic.Int64
-	postprocessNs atomic.Int64
-	encodeNs      atomic.Int64
-	totalNs       atomic.Int64
+	frames   atomic.Int64
+	dropped  atomic.Int64
+	decodeNs atomic.Int64
+	resizeNs atomic.Int64
+	encodeNs atomic.Int64
+	totalNs  atomic.Int64
 }
 
 // RecordDrop increments the dropped-frame counter.
@@ -27,12 +25,10 @@ func (m *Pipeline) RecordDrop() {
 }
 
 // Record adds one frame's timing breakdown to the running totals.
-func (m *Pipeline) Record(decode, preprocess, inference, postprocess, encode, total time.Duration) {
+func (m *Pipeline) Record(decode, resize, encode, total time.Duration) {
 	m.frames.Add(1)
 	m.decodeNs.Add(int64(decode))
-	m.preprocessNs.Add(int64(preprocess))
-	m.inferenceNs.Add(int64(inference))
-	m.postprocessNs.Add(int64(postprocess))
+	m.resizeNs.Add(int64(resize))
 	m.encodeNs.Add(int64(encode))
 	m.totalNs.Add(int64(total))
 }
@@ -65,12 +61,10 @@ func (m *Pipeline) RunReporter(ctx context.Context, interval time.Duration, logg
 			}
 
 			logger.Printf(
-				"pipeline: frames=%d dropped=%d | avg decode=%.1fms preprocess=%.1fms inference=%.1fms postprocess=%.1fms encode=%.1fms total=%.1fms",
+				"pipeline: frames=%d dropped=%d | avg decode=%.1fms resize=%.1fms encode=%.1fms total=%.1fms",
 				delta, droppedDelta,
 				avg(&m.decodeNs),
-				avg(&m.preprocessNs),
-				avg(&m.inferenceNs),
-				avg(&m.postprocessNs),
+				avg(&m.resizeNs),
 				avg(&m.encodeNs),
 				avg(&m.totalNs),
 			)

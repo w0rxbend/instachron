@@ -13,13 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	ort "github.com/yalue/onnxruntime_go"
-
-	"github.com/w0rxbend/instachron/shared/restream"
-	"github.com/w0rxbend/instachron/shared/streamproto"
-	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/fsrcnn"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/metrics"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/pipeline"
+	"github.com/w0rxbend/instachron/shared/restream"
+	"github.com/w0rxbend/instachron/shared/streamproto"
 )
 
 type appConfig struct {
@@ -27,45 +24,30 @@ type appConfig struct {
 	upstreamTCPAddr string
 	tcpAddr         string
 	tcpEnabled      bool
-	modelPath       string
-	onnxLibPath     string
-	inputName       string
-	outputName      string
-	scale           int
 	numWorkers      int
-	intraOpThreads  int
-	interOpThreads  int
 	queueMultiplier int
 	maxInputWidth   int
 	maxInputHeight  int
+	scale           int
 	jpegQuality     int
-	warmupRuns      int
 	metricsInterval time.Duration
 }
 
 func loadConfig() *appConfig {
 	numCPU := runtime.NumCPU()
-	intraOp := envInt("INTRA_OP_THREADS", 2)
-	workers := envInt("NUM_WORKERS", max(1, numCPU/intraOp))
+	workers := envInt("NUM_WORKERS", max(1, numCPU/2))
 
 	return &appConfig{
 		httpAddr:        envStr("HTTP_ADDR", ":8092"),
 		upstreamTCPAddr: envStr("UPSTREAM_TCP_ADDR", "localhost:9001"),
 		tcpAddr:         envStr("TCP_ADDR", ":9004"),
 		tcpEnabled:      envStr("TCP_ENABLED", "true") != "false",
-		modelPath:       envStr("MODEL_PATH", "./models/fsrcnn_x2.onnx"),
-		onnxLibPath:     envStr("ONNX_LIB_PATH", ""),
-		inputName:       envStr("ONNX_INPUT_NAME", "input"),
-		outputName:      envStr("ONNX_OUTPUT_NAME", "output"),
-		scale:           envInt("SCALE_FACTOR", 2),
 		numWorkers:      workers,
-		intraOpThreads:  intraOp,
-		interOpThreads:  envInt("INTER_OP_THREADS", 1),
 		queueMultiplier: envInt("QUEUE_MULTIPLIER", 2),
 		maxInputWidth:   envInt("MAX_INPUT_WIDTH", 960),
 		maxInputHeight:  envInt("MAX_INPUT_HEIGHT", 540),
+		scale:           envInt("UPSCALE_FACTOR", 2),
 		jpegQuality:     envInt("JPEG_QUALITY", 85),
-		warmupRuns:      envInt("WARMUP_RUNS", 5),
 		metricsInterval: time.Duration(envInt("METRICS_INTERVAL_SEC", 60)) * time.Second,
 	}
 }
@@ -74,49 +56,17 @@ func Run() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	cfg := loadConfig()
 
-	logger.Printf("camera-web-restream-fsrcnn-api config: workers=%d intraOpThreads=%d scale=%d queue=%d max=%dx%d model=%s",
-		cfg.numWorkers, cfg.intraOpThreads, cfg.scale,
+	logger.Printf("camera-web-restream-fsrcnn-api config: transform=lanczos-%dx workers=%d queue=%d max=%dx%d",
+		cfg.scale, cfg.numWorkers,
 		cfg.numWorkers*cfg.queueMultiplier,
-		cfg.maxInputWidth, cfg.maxInputHeight,
-		cfg.modelPath)
-
-	if cfg.onnxLibPath != "" {
-		ort.SetSharedLibraryPath(cfg.onnxLibPath)
-	}
-	if err := ort.InitializeEnvironment(); err != nil {
-		logger.Fatalf("ort init: %v", err)
-	}
-	defer ort.DestroyEnvironment()
-
-	sessions := make([]*fsrcnn.Session, cfg.numWorkers)
-	for i := range sessions {
-		sess, err := fsrcnn.New(
-			cfg.modelPath,
-			cfg.inputName,
-			cfg.outputName,
-			cfg.scale,
-			cfg.intraOpThreads,
-			cfg.interOpThreads,
-		)
-		if err != nil {
-			logger.Fatalf("create session %d: %v\n\nhint: place the ONNX model at %s\nhint: set ONNX_LIB_PATH to the path of libonnxruntime.so if ORT is not on LD_LIBRARY_PATH",
-				i, err, cfg.modelPath)
-		}
-		sessions[i] = sess
-	}
-
-	if cfg.warmupRuns > 0 {
-		logger.Printf("warming up %d session(s) with %d runs each...", cfg.numWorkers, cfg.warmupRuns)
-		pipeline.Warmup(sessions, cfg.scale, cfg.warmupRuns)
-		logger.Printf("warmup complete")
-	}
+		cfg.maxInputWidth, cfg.maxInputHeight)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	m := &metrics.Pipeline{}
 	pool := pipeline.New(
-		sessions,
+		cfg.numWorkers,
 		cfg.numWorkers*cfg.queueMultiplier,
 		cfg.jpegQuality,
 		cfg.maxInputWidth,
@@ -142,7 +92,6 @@ func Run() {
 		}
 	}()
 
-	// broadcaster fans upscaled frames to downstream TCP proxy clients
 	broadcaster := restream.NewBroadcaster()
 
 	if cfg.tcpEnabled {

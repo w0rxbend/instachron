@@ -67,32 +67,23 @@ services:
       - camera-web-api
     restart: unless-stopped
 
-  # ── Optional: FSRCNN x2 upscaler ───────────────────────────────────────────
-  # Requires:
-  #   1. An FSRCNN x2 ONNX model at ./services/camera-web-restream-fsrcnn-api/models/fsrcnn_x2.onnx
-  #   2. profile "fsrcnn": docker compose --profile fsrcnn up
-  # ORT library is bundled in the image (downloaded during build).
-  # Override ORT_VERSION build arg to change the bundled library version.
+  # ── Optional: Lanczos upscale restream transform ───────────────────────────
+  # Activate with: docker compose --profile fsrcnn up
 
   camera-web-restream-fsrcnn-api:
     build:
       context: .
       dockerfile: services/camera-web-restream-fsrcnn-api/Dockerfile
-      args:
-        ORT_VERSION: "${ORT_VERSION:-1.20.1}"
     ports:
       - "${FSRCNN_PORT:-8092}:8092"
-    volumes:
-      - ./services/camera-web-restream-fsrcnn-api/models:/models:ro
     environment:
       HTTP_ADDR: ":8092"
-      ORIGIN_URL: "http://camera-web-api:8080"
-      MODEL_PATH: /models/fsrcnn_x2.onnx
-      SCALE_FACTOR: "${SCALE_FACTOR:-2}"
       JPEG_QUALITY: "${FSRCNN_JPEG_QUALITY:-85}"
       NUM_WORKERS: "${FSRCNN_WORKERS:-}"
-      INTRA_OP_THREADS: "${INTRA_OP_THREADS:-2}"
-      WARMUP_RUNS: "${WARMUP_RUNS:-5}"
+      UPSCALE_FACTOR: "${UPSCALE_FACTOR:-2}"
+      QUEUE_MULTIPLIER: "${QUEUE_MULTIPLIER:-1}"
+      MAX_INPUT_WIDTH: "${MAX_INPUT_WIDTH:-640}"
+      MAX_INPUT_HEIGHT: "${MAX_INPUT_HEIGHT:-360}"
       METRICS_INTERVAL_SEC: "${METRICS_INTERVAL_SEC:-60}"
     depends_on:
       - camera-web-api
