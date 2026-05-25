@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	ort "github.com/yalue/onnxruntime_go"
 
 	"github.com/w0rxbend/instachron/shared/restream"
+	"github.com/w0rxbend/instachron/shared/streamproto"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/fsrcnn"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/metrics"
 	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/pipeline"
@@ -22,7 +24,9 @@ import (
 
 type appConfig struct {
 	httpAddr        string
-	originURL       string
+	upstreamTCPAddr string
+	tcpAddr         string
+	tcpEnabled      bool
 	modelPath       string
 	onnxLibPath     string
 	inputName       string
@@ -46,7 +50,9 @@ func loadConfig() *appConfig {
 
 	return &appConfig{
 		httpAddr:        envStr("HTTP_ADDR", ":8092"),
-		originURL:       envStr("ORIGIN_URL", "http://localhost:8080"),
+		upstreamTCPAddr: envStr("UPSTREAM_TCP_ADDR", "localhost:9001"),
+		tcpAddr:         envStr("TCP_ADDR", ":9004"),
+		tcpEnabled:      envStr("TCP_ENABLED", "true") != "false",
 		modelPath:       envStr("MODEL_PATH", "./models/fsrcnn_x2.onnx"),
 		onnxLibPath:     envStr("ONNX_LIB_PATH", ""),
 		inputName:       envStr("ONNX_INPUT_NAME", "input"),
@@ -136,8 +142,41 @@ func Run() {
 		}
 	}()
 
-	disc := restream.NewDiscovery(cfg.originURL, manager, pool, logger)
-	go disc.Run(ctx)
+	// broadcaster fans upscaled frames to downstream TCP proxy clients
+	broadcaster := restream.NewBroadcaster()
+
+	if cfg.tcpEnabled {
+		tcpSrv := restream.NewTCPServer(restream.TCPServerConfig{
+			ListenAddr:   cfg.tcpAddr,
+			MaxClients:   64,
+			WriteTimeout: 2 * time.Second,
+		}, broadcaster, logger)
+		go func() {
+			if err := tcpSrv.Run(ctx); err != nil {
+				logger.Printf("TCP server error: %v", err)
+			}
+		}()
+	}
+
+	upstream := restream.NewTCPUpstream(
+		restream.TCPUpstreamConfig{Addr: cfg.upstreamTCPAddr},
+		func(f streamproto.Frame) {
+			id := fmt.Sprintf("%d", f.CameraID)
+			pool.Process(f.Payload, func(processed []byte) {
+				pf := streamproto.Frame{
+					CameraID:  f.CameraID,
+					Timestamp: f.Timestamp,
+					Sequence:  f.Sequence,
+					Payload:   processed,
+				}
+				broadcaster.Publish(pf)
+				manager.Push(id, processed)
+			})
+		},
+		manager.MarkAllOffline,
+		logger,
+	)
+	go upstream.Run(ctx)
 
 	api := &apiServer{manager: manager, logger: logger}
 	httpSrv := &http.Server{
@@ -154,7 +193,8 @@ func Run() {
 		}
 	}()
 
-	logger.Printf("camera-web-restream-fsrcnn-api listening on %s  origin=%s", cfg.httpAddr, cfg.originURL)
+	logger.Printf("camera-web-restream-fsrcnn-api listening on %s  upstream=%s  tcp=%s (enabled=%v)",
+		cfg.httpAddr, cfg.upstreamTCPAddr, cfg.tcpAddr, cfg.tcpEnabled)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("HTTP server failed: %v", err)
 	}

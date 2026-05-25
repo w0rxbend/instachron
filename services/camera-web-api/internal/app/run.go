@@ -16,6 +16,8 @@ import (
 	"github.com/w0rxbend/instachron/services/camera-web-api/internal/httpapi"
 	"github.com/w0rxbend/instachron/services/camera-web-api/internal/ipcclient"
 	"github.com/w0rxbend/instachron/services/camera-web-api/internal/rotation"
+	"github.com/w0rxbend/instachron/shared/restream"
+	"github.com/w0rxbend/instachron/shared/streamproto"
 )
 
 const (
@@ -23,6 +25,8 @@ const (
 	defaultWebDir       = "./web"
 	defaultSocketPath   = "/tmp/instachron/frames.sock"
 	defaultCameraConfig = "./cameras.json"
+	defaultTCPAddr      = ":9001"
+	defaultMaxClients   = 64
 )
 
 func Run() {
@@ -32,6 +36,8 @@ func Run() {
 	webDir := envString("WEB_DIR", defaultWebDir)
 	socketPath := envString("IPC_SOCKET_PATH", defaultSocketPath)
 	cameraConfigPath := envString("CAMERA_CONFIG", defaultCameraConfig)
+	tcpAddr := envString("TCP_ADDR", defaultTCPAddr)
+	tcpEnabled := envString("TCP_ENABLED", "true") != "false"
 
 	indexHTML, err := os.ReadFile(filepath.Join(webDir, "index.html"))
 	if err != nil {
@@ -61,6 +67,12 @@ func Run() {
 		}
 	}()
 
+	// broadcaster fans frames out to TCP downstream clients (proxy-to-proxy transport)
+	broadcaster := restream.NewBroadcaster()
+
+	// per-camera sequence counters; only written by the single IPC reader goroutine
+	seqs := make(map[uint32]uint64)
+
 	reader := ipcclient.New(socketPath, ipcclient.Handler{
 		OnFrame: func(cameraID uint32, jpeg []byte) {
 			id := fmt.Sprintf("%d", cameraID)
@@ -68,6 +80,14 @@ func Run() {
 				jpeg = rotation.Apply(jpeg, deg)
 			}
 			manager.Push(id, jpeg)
+
+			seqs[cameraID]++
+			broadcaster.Publish(streamproto.Frame{
+				Timestamp: time.Now(),
+				Sequence:  seqs[cameraID],
+				CameraID:  cameraID,
+				Payload:   jpeg,
+			})
 		},
 		OnOffline: func(cameraID uint32) {
 			manager.MarkOffline(fmt.Sprintf("%d", cameraID))
@@ -75,6 +95,19 @@ func Run() {
 		OnDisconnect: manager.MarkAllOffline,
 	}, logger)
 	go reader.Run(ctx)
+
+	if tcpEnabled {
+		tcpSrv := restream.NewTCPServer(restream.TCPServerConfig{
+			ListenAddr:   tcpAddr,
+			MaxClients:   defaultMaxClients,
+			WriteTimeout: 2 * time.Second,
+		}, broadcaster, logger)
+		go func() {
+			if err := tcpSrv.Run(ctx); err != nil {
+				logger.Printf("TCP server error: %v", err)
+			}
+		}()
+	}
 
 	h := httpapi.New(manager, rotCfg, indexHTML, logger)
 	httpSrv := &http.Server{
@@ -92,7 +125,8 @@ func Run() {
 		}
 	}()
 
-	logger.Printf("camera-web-api listening on %s  ipc=%s", addr, socketPath)
+	logger.Printf("camera-web-api listening on %s  ipc=%s  tcp=%s (enabled=%v)",
+		addr, socketPath, tcpAddr, tcpEnabled)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("HTTP server failed: %v", err)
 	}

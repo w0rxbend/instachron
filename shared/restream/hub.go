@@ -206,6 +206,21 @@ func (m *Manager) CheckLiveness() {
 	}
 }
 
+// Push delivers a JPEG frame to the Hub for id, creating it lazily on first
+// call. Cameras created this way get an auto-incrementing index and rotation=0.
+// Use EnsureCamera when origin metadata (index, rotation) is available.
+func (m *Manager) Push(id string, jpeg []byte) {
+	m.mu.Lock()
+	h, ok := m.hubs[id]
+	if !ok {
+		h = newHub(id, len(m.ordered), 0)
+		m.hubs[id] = h
+		m.ordered = append(m.ordered, id)
+	}
+	m.mu.Unlock()
+	h.Push(jpeg)
+}
+
 // KnownCameras returns camera info for every camera seen since startup,
 // sorted by ID for stable ordering.
 func (m *Manager) KnownCameras() []cameras.CameraInfo {
