@@ -4,30 +4,23 @@
 FROM golang:1.22-bookworm AS builder
 WORKDIR /src
 
-COPY shared/cameras/go.mod                           shared/cameras/
-COPY shared/mjpeg/go.mod                             shared/mjpeg/
-COPY shared/restream/go.mod                          shared/restream/
+# go.mod + go.sum first for layer-cached dependency download
+COPY shared/cameras/go.mod                          shared/cameras/
+COPY shared/mjpeg/go.mod                            shared/mjpeg/
+COPY shared/restream/go.mod                         shared/restream/
 COPY services/camera-web-restream-fsrcnn-api/go.mod \
      services/camera-web-restream-fsrcnn-api/go.sum \
      services/camera-web-restream-fsrcnn-api/
-
-RUN go work init \
-    ./services/camera-web-restream-fsrcnn-api \
-    ./shared/cameras \
-    ./shared/mjpeg \
-    ./shared/restream
-
 WORKDIR /src/services/camera-web-restream-fsrcnn-api
-RUN go mod download
+RUN GOWORK=off go mod download
 
 WORKDIR /src
-COPY shared/cameras/                                 shared/cameras/
-COPY shared/mjpeg/                                   shared/mjpeg/
-COPY shared/restream/                                shared/restream/
-COPY services/camera-web-restream-fsrcnn-api/     services/camera-web-restream-fsrcnn-api/
-
+COPY shared/cameras/                                shared/cameras/
+COPY shared/mjpeg/                                  shared/mjpeg/
+COPY shared/restream/                               shared/restream/
+COPY services/camera-web-restream-fsrcnn-api/       services/camera-web-restream-fsrcnn-api/
 WORKDIR /src/services/camera-web-restream-fsrcnn-api
-RUN go build -ldflags="-s -w" -o /out/camera-web-restream-fsrcnn-api ./cmd/camera-web-restream-fsrcnn-api
+RUN GOWORK=off go build -ldflags="-s -w" -o /out/camera-web-restream-fsrcnn-api ./cmd/camera-web-restream-fsrcnn-api
 
 # ── ONNX Runtime fetch stage ──────────────────────────────────────────────────
 # Downloads and unpacks the prebuilt ORT CPU library so the final image does
