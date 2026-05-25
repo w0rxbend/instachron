@@ -70,16 +70,16 @@ services:
   # ── Optional: Lanczos upscale restream transform ───────────────────────────
   # Activate with: docker compose --profile fsrcnn up
 
-  camera-web-restream-fsrcnn-api:
+  camera-web-restream-upscaler-api:
     build:
       context: .
-      dockerfile: services/camera-web-restream-fsrcnn-api/Dockerfile
+      dockerfile: services/camera-web-restream-upscaler-api/Dockerfile
     ports:
-      - "${FSRCNN_PORT:-8092}:8092"
+      - "${UPSCALER_PORT:-8092}:8092"
     environment:
       HTTP_ADDR: ":8092"
-      JPEG_QUALITY: "${FSRCNN_JPEG_QUALITY:-85}"
-      NUM_WORKERS: "${FSRCNN_WORKERS:-}"
+      JPEG_QUALITY: "${UPSCALER_JPEG_QUALITY:-85}"
+      NUM_WORKERS: "${UPSCALER_WORKERS:-}"
       UPSCALE_FACTOR: "${UPSCALE_FACTOR:-2}"
       QUEUE_MULTIPLIER: "${QUEUE_MULTIPLIER:-1}"
       MAX_INPUT_WIDTH: "${MAX_INPUT_WIDTH:-640}"
@@ -88,7 +88,7 @@ services:
     depends_on:
       - camera-web-api
     profiles:
-      - fsrcnn
+      - upscaler
     restart: unless-stopped
 
   # ── Optional: ffmpeg RTMP streamer ──────────────────────────────────────────
