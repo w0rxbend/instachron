@@ -8,7 +8,4 @@ require (
 	github.com/w0rxbend/instachron/pkg/restream v0.0.0
 )
 
-require (
-	github.com/w0rxbend/instachron/pkg/cameras v0.0.0 // indirect
-	golang.org/x/image v0.0.0-20191009234506-e7c1f5e7dbb8 // indirect
-)
+require golang.org/x/image v0.0.0-20191009234506-e7c1f5e7dbb8 // indirect
