@@ -4,17 +4,21 @@ TCP frame server for ESP32-CAM JPEG frames.
 
 ## Workspace
 
-This repository is a Go workspace with two project modules:
+This repository is a Go workspace with independently deployable service modules under `services/`:
 
-- `tcp-camera-backend`: raw TCP receiver for ESP32-CAM JPEG frames.
-- `ffmpeg-streamer`: streaming project module.
+- `services/tcp-camera-backend`: raw TCP receiver for ESP32-CAM JPEG frames and Unix socket publisher.
+- `services/camera-web-api`: HTTP API and web UI backed by the frame IPC socket.
+- `services/camera-web-restreamer-api`: HTTP restream proxy for camera streams.
+- `services/camera-web-restream-enhancer-api`: restream proxy with image enhancement.
+- `services/camera-web-restream-fsrcnn-api`: optional FSRCNN upscaling restream proxy.
+- `services/ffmpeg-streamer`: ffmpeg RTMP streaming process.
 
-From the repository root, workspace-aware Go commands can target either module:
+From the repository root, workspace-aware Go commands can target any service command:
 
 ```sh
-go test ./tcp-camera-backend/...
-go run ./tcp-camera-backend
-go run ./ffmpeg-streamer
+go test ./services/tcp-camera-backend/...
+go run ./services/tcp-camera-backend/cmd/tcp-camera-backend
+go run ./services/ffmpeg-streamer/cmd/ffmpeg-streamer
 ```
 
 ## Client-server protocol
@@ -57,21 +61,27 @@ Backend receiver rules:
 
 The sequence number can be used to detect dropped frames. The timestamp is the ESP32 `millis()` value when the frame header was built; it is not wall-clock time.
 
-Each accepted JPEG is written to `FRAME_OUTPUT_DIR/<camera-id>/`, and the latest image for that camera is atomically updated at `FRAME_OUTPUT_DIR/<camera-id>/current-image.jpeg`.
+Each accepted JPEG is published to connected consumers over the Unix socket configured by `IPC_SOCKET_PATH`.
 
 ## Running
+
+Create a local environment file:
+
+```sh
+cp .env.example .env
+```
 
 Run the server:
 
 ```sh
-go run ./tcp-camera-backend
+go run ./services/tcp-camera-backend/cmd/tcp-camera-backend
 ```
 
 Useful environment variables:
 
 ```sh
 TCP_ADDR=0.0.0.0:5000
-FRAME_OUTPUT_DIR=./frames
+IPC_SOCKET_PATH=/tmp/instachron/frames.sock
 MAX_FRAME_BYTES=5242880
 READ_TIMEOUT=30s
 ```
@@ -81,10 +91,13 @@ READ_TIMEOUT=30s
 Run the ffmpeg daemon from the repository root and select the camera to stream:
 
 ```sh
-STREAM_URL=rtmp://example/live/key go run ./ffmpeg-streamer --camera-id 17
+set -a
+source .env
+set +a
+go run ./services/ffmpeg-streamer/cmd/ffmpeg-streamer --camera-id 17
 ```
 
-The streamer watches `FRAME_OUTPUT_DIR`, reads `current-image.jpeg` for the configured camera (or composes a merged canvas of all cameras in merge mode), feeds frames to `ffmpeg` over stdin as MJPEG, and publishes an RTMP stream. You can set one direct output URL or one platform stream key:
+The streamer reads frames from the IPC socket for the configured camera (or composes a merged canvas of all cameras in merge mode), feeds frames to `ffmpeg` over stdin as MJPEG, and publishes an RTMP stream. You can set one direct output URL or one platform stream key:
 
 ```sh
 STREAM_URL=rtmp://example/live/key
@@ -96,10 +109,9 @@ YOUTUBE_STREAM_KEY=xxxx-xxxx-xxxx-xxxx
 Useful streamer environment variables:
 
 ```sh
-FRAME_OUTPUT_DIR=./frames
+IPC_SOCKET_PATH=/tmp/instachron/frames.sock
 CAMERA_ID=0
 FFMPEG_PATH=ffmpeg
 STREAM_FRAME_RATE=10
-FRAME_POLL_INTERVAL=250ms
 FFMPEG_RESTART_DELAY=5s
 ```

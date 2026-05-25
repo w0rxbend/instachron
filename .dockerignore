@@ -1,0 +1,7 @@
+.git
+.claude
+.devcontainer
+dashboard/node_modules
+dashboard/.nuxt
+dashboard/.output
+**/.DS_Store

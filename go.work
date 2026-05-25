@@ -1,10 +1,10 @@
 go 1.22.5
 
 use (
-	./camera-web-api
-	./camera-web-restream-FSRCNN-api
-	./camera-web-restream-enhancer-api
-	./camera-web-restreamer-api
-	./ffmpeg-streamer
-	./tcp-camera-backend
+	./services/camera-web-api
+	./services/camera-web-restream-enhancer-api
+	./services/camera-web-restream-fsrcnn-api
+	./services/camera-web-restreamer-api
+	./services/ffmpeg-streamer
+	./services/tcp-camera-backend
 )

@@ -1,0 +1,11 @@
+FROM golang:1.22-alpine AS builder
+ENV GOWORK=off
+WORKDIR /src/services/tcp-camera-backend
+COPY services/tcp-camera-backend/ ./
+RUN go mod download
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/tcp-camera-backend ./cmd/tcp-camera-backend
+
+FROM alpine:3.21
+COPY --from=builder /out/tcp-camera-backend /usr/local/bin/tcp-camera-backend
+EXPOSE 5000
+ENTRYPOINT ["tcp-camera-backend"]

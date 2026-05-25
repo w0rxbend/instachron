@@ -6,7 +6,8 @@ services:
 
   tcp-camera-backend:
     build:
-      context: ./tcp-camera-backend
+      context: .
+      dockerfile: services/tcp-camera-backend/Dockerfile
     ports:
       - "${TCP_PORT:-5000}:5000"
     volumes:
@@ -18,13 +19,14 @@ services:
 
   camera-web-api:
     build:
-      context: ./camera-web-api
+      context: .
+      dockerfile: services/camera-web-api/Dockerfile
     ports:
       - "${API_PORT:-8080}:8080"
     volumes:
       - ipc:/tmp/instachron
       # Uncomment to override the default cameras.json rotation config:
-      # - ./camera-web-api/cameras.json:/app/cameras.json:ro
+      # - ./services/camera-web-api/cameras.json:/app/cameras.json:ro
     environment:
       HTTP_ADDR: ":8080"
       IPC_SOCKET_PATH: /tmp/instachron/frames.sock
@@ -36,7 +38,8 @@ services:
 
   camera-web-restreamer-api:
     build:
-      context: ./camera-web-restreamer-api
+      context: .
+      dockerfile: services/camera-web-restreamer-api/Dockerfile
     ports:
       - "${RESTREAMER_PORT:-8090}:8090"
     environment:
@@ -48,7 +51,8 @@ services:
 
   camera-web-restream-enhancer-api:
     build:
-      context: ./camera-web-restream-enhancer-api
+      context: .
+      dockerfile: services/camera-web-restream-enhancer-api/Dockerfile
     ports:
       - "${ENHANCER_PORT:-8091}:8091"
     environment:
@@ -65,20 +69,21 @@ services:
 
   # ── Optional: FSRCNN x2 upscaler ───────────────────────────────────────────
   # Requires:
-  #   1. An FSRCNN x2 ONNX model at ./camera-web-restream-FSRCNN-api/models/fsrcnn_x2.onnx
+  #   1. An FSRCNN x2 ONNX model at ./services/camera-web-restream-fsrcnn-api/models/fsrcnn_x2.onnx
   #   2. profile "fsrcnn": docker compose --profile fsrcnn up
   # ORT library is bundled in the image (downloaded during build).
   # Override ORT_VERSION build arg to change the bundled library version.
 
-  camera-web-restream-FSRCNN-api:
+  camera-web-restream-fsrcnn-api:
     build:
-      context: ./camera-web-restream-FSRCNN-api
+      context: .
+      dockerfile: services/camera-web-restream-fsrcnn-api/Dockerfile
       args:
         ORT_VERSION: "${ORT_VERSION:-1.20.1}"
     ports:
       - "${FSRCNN_PORT:-8092}:8092"
     volumes:
-      - ./camera-web-restream-FSRCNN-api/models:/models:ro
+      - ./services/camera-web-restream-fsrcnn-api/models:/models:ro
     environment:
       HTTP_ADDR: ":8092"
       ORIGIN_URL: "http://camera-web-api:8080"
@@ -102,7 +107,8 @@ services:
 
   ffmpeg-streamer:
     build:
-      context: ./ffmpeg-streamer
+      context: .
+      dockerfile: services/ffmpeg-streamer/Dockerfile
     volumes:
       - ipc:/tmp/instachron
     environment:
@@ -113,7 +119,9 @@ services:
       YOUTUBE_STREAM_KEY: "${YOUTUBE_STREAM_KEY:-}"
       CAMERA_ID: "${CAMERA_ID:-0}"
       MERGE_ALL: "${MERGE_ALL:-false}"
+      FFMPEG_PATH: "${FFMPEG_PATH:-ffmpeg}"
       STREAM_FRAME_RATE: "${STREAM_FRAME_RATE:-10}"
+      FFMPEG_RESTART_DELAY: "${FFMPEG_RESTART_DELAY:-5s}"
       CELL_WIDTH: "${CELL_WIDTH:-320}"
       CELL_HEIGHT: "${CELL_HEIGHT:-240}"
     depends_on:
