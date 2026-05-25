@@ -12,14 +12,14 @@
       "brightness_max": 35.0,
       "contrast_max": 35.0,
       "jpeg_quality": 90,
-      "filters": ["gaussian_blur", "unsharp_mask", "convolution_emboss"]
+      "filters": ["convolution_emboss"]
     },
     "1": {
       "dark_threshold": 0.40,
       "brightness_max": 40.0,
       "contrast_max": 40.0,
       "jpeg_quality": 88,
-      "filters": ["gaussian_blur", "saturation_increase", "colorize"]
+      "filters": ["convolution_emboss"]
     }
   }
 }
