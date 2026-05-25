@@ -1,14 +1,35 @@
-# ── Build stage ────────────────────────────────────────────────────────────────
+# ── Build stage ──────────────────────────────────────────────────────────────
 # Use a glibc-based image so the CGO binary is linked against glibc, matching
 # the runtime image (debian:bookworm-slim).
 FROM golang:1.22-bookworm AS builder
-ENV GOWORK=off
+WORKDIR /src
+
+COPY pkg/cameras/go.mod                           pkg/cameras/
+COPY pkg/mjpeg/go.mod                             pkg/mjpeg/
+COPY pkg/restream/go.mod                          pkg/restream/
+COPY services/camera-web-restream-fsrcnn-api/go.mod \
+     services/camera-web-restream-fsrcnn-api/go.sum \
+     services/camera-web-restream-fsrcnn-api/
+
+RUN go work init \
+    ./services/camera-web-restream-fsrcnn-api \
+    ./pkg/cameras \
+    ./pkg/mjpeg \
+    ./pkg/restream
+
 WORKDIR /src/services/camera-web-restream-fsrcnn-api
-COPY services/camera-web-restream-fsrcnn-api/ ./
 RUN go mod download
+
+WORKDIR /src
+COPY pkg/cameras/                                 pkg/cameras/
+COPY pkg/mjpeg/                                   pkg/mjpeg/
+COPY pkg/restream/                                pkg/restream/
+COPY services/camera-web-restream-fsrcnn-api/     services/camera-web-restream-fsrcnn-api/
+
+WORKDIR /src/services/camera-web-restream-fsrcnn-api
 RUN go build -ldflags="-s -w" -o /out/camera-web-restream-fsrcnn-api ./cmd/camera-web-restream-fsrcnn-api
 
-# ── ONNX Runtime fetch stage ────────────────────────────────────────────────────
+# ── ONNX Runtime fetch stage ──────────────────────────────────────────────────
 # Downloads and unpacks the prebuilt ORT CPU library so the final image does
 # not need wget at runtime. Override ORT_VERSION to switch library versions.
 FROM debian:bookworm-slim AS ort-fetcher
@@ -22,7 +43,7 @@ RUN wget -qO /tmp/ort.tgz \
     && cp -P /tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so* /ort/ \
     && rm -rf /tmp/ort.tgz "/tmp/onnxruntime-linux-x64-${ORT_VERSION}"
 
-# ── Runtime stage ───────────────────────────────────────────────────────────────
+# ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 # libgomp1 is required by ORT for multi-threaded CPU inference.
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \

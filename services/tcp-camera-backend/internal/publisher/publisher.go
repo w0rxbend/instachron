@@ -2,38 +2,26 @@ package publisher
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"sync"
+
+	"github.com/w0rxbend/instachron/pkg/frameipc"
 )
 
-const (
-	ipcMagic1      byte = 0xAA
-	ipcMagic2      byte = 0xBB
-	ipcMsgFrame    byte = 0x01
-	ipcMsgOffline  byte = 0x02
-	ipcHeaderSize       = 11 // 2 magic + 1 type + 4 cameraID + 4 payloadSize
-	ipcChannelSize      = 64
-)
-
-type ipcMsg struct {
-	msgType  byte
-	cameraID uint32
-	payload  []byte
-}
+const ipcChannelSize = 64
 
 type consumerConn struct {
 	conn net.Conn
-	ch   chan ipcMsg
+	ch   chan frameipc.Msg
 }
 
-// framePublisher listens on a Unix domain socket and fans out IPC messages
+// Publisher listens on a Unix domain socket and fans out IPC messages
 // to every connected consumer (camera-web-api, ffmpeg-streamer, etc.).
-// Multiple camera goroutines call publish concurrently; serialisation happens
-// inside each per-consumer writer goroutine, so the hot path never blocks.
+// Multiple camera goroutines call Publish concurrently; serialisation happens
+// inside each per-consumer writer goroutine so the hot path never blocks.
 type Publisher struct {
 	socketPath string
 	logger     *log.Logger
@@ -92,7 +80,7 @@ func (p *Publisher) Listen(ctx context.Context) error {
 
 		c := &consumerConn{
 			conn: conn,
-			ch:   make(chan ipcMsg, ipcChannelSize),
+			ch:   make(chan frameipc.Msg, ipcChannelSize),
 		}
 
 		p.mu.Lock()
@@ -126,7 +114,7 @@ func (p *Publisher) serveConsumer(ctx context.Context, c *consumerConn) {
 			if !ok {
 				return
 			}
-			if err := writeIPCMsg(c.conn, msg); err != nil {
+			if err := frameipc.Write(c.conn, msg); err != nil {
 				return
 			}
 		}
@@ -134,14 +122,14 @@ func (p *Publisher) serveConsumer(ctx context.Context, c *consumerConn) {
 }
 
 func (p *Publisher) Publish(cameraID uint32, jpeg []byte) {
-	p.fanOut(ipcMsg{msgType: ipcMsgFrame, cameraID: cameraID, payload: jpeg})
+	p.fanOut(frameipc.Msg{Type: frameipc.TypeFrame, CameraID: cameraID, Payload: jpeg})
 }
 
 func (p *Publisher) PublishOffline(cameraID uint32) {
-	p.fanOut(ipcMsg{msgType: ipcMsgOffline, cameraID: cameraID})
+	p.fanOut(frameipc.Msg{Type: frameipc.TypeOffline, CameraID: cameraID})
 }
 
-func (p *Publisher) fanOut(msg ipcMsg) {
+func (p *Publisher) fanOut(msg frameipc.Msg) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -152,25 +140,4 @@ func (p *Publisher) fanOut(msg ipcMsg) {
 			// slow consumer — drop rather than block the camera ingestion path
 		}
 	}
-}
-
-// writeIPCMsg serialises an IPC message to the wire.
-// Frame format: magic(2) | type(1) | cameraID(4 BE) | payloadSize(4 BE) | payload
-func writeIPCMsg(conn net.Conn, msg ipcMsg) error {
-	hdr := [ipcHeaderSize]byte{}
-	hdr[0] = ipcMagic1
-	hdr[1] = ipcMagic2
-	hdr[2] = msg.msgType
-	binary.BigEndian.PutUint32(hdr[3:7], msg.cameraID)
-	binary.BigEndian.PutUint32(hdr[7:11], uint32(len(msg.payload)))
-
-	if _, err := conn.Write(hdr[:]); err != nil {
-		return err
-	}
-	if len(msg.payload) > 0 {
-		if _, err := conn.Write(msg.payload); err != nil {
-			return err
-		}
-	}
-	return nil
 }

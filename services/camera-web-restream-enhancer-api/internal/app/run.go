@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/w0rxbend/instachron/pkg/restream"
+	"github.com/w0rxbend/instachron/services/camera-web-restream-enhancer-api/internal/enhance"
 )
 
 const (
@@ -23,22 +26,22 @@ func Run() {
 	addr := envString("HTTP_ADDR", defaultAddr)
 	originURL := envString("ORIGIN_URL", defaultOriginURL)
 
-	cfg := enhancerConfig{
-		sharpen:       envFloat("SHARPEN", 1.0),
-		darkThreshold: envFloat("DARK_THRESHOLD", 0.35),
-		brightnessMax: envFloat("BRIGHTNESS_MAX", 30.0),
-		contrastMax:   envFloat("CONTRAST_MAX", 25.0),
-		jpegQuality:   envInt("JPEG_QUALITY", 85),
+	cfg := enhance.Config{
+		Sharpen:       envFloat("SHARPEN", 1.0),
+		DarkThreshold: envFloat("DARK_THRESHOLD", 0.35),
+		BrightnessMax: envFloat("BRIGHTNESS_MAX", 30.0),
+		ContrastMax:   envFloat("CONTRAST_MAX", 25.0),
+		JPEGQuality:   envInt("JPEG_QUALITY", 85),
 	}
 
 	logger.Printf("enhancer config: sharpen=%.2f dark_threshold=%.2f brightness_max=%.1f contrast_max=%.1f jpeg_quality=%d",
-		cfg.sharpen, cfg.darkThreshold, cfg.brightnessMax, cfg.contrastMax, cfg.jpegQuality)
+		cfg.Sharpen, cfg.DarkThreshold, cfg.BrightnessMax, cfg.ContrastMax, cfg.JPEGQuality)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	manager := newHubManager()
-	enh := newEnhancer(cfg)
+	manager := restream.NewManager()
+	proc := enhance.New(cfg)
 
 	go func() {
 		ticker := time.NewTicker(time.Second)
@@ -48,13 +51,13 @@ func Run() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				manager.checkLiveness()
+				manager.CheckLiveness()
 			}
 		}
 	}()
 
-	disc := newDiscovery(originURL, manager, enh, logger)
-	go disc.run(ctx)
+	disc := restream.NewDiscovery(originURL, manager, proc, logger)
+	go disc.Run(ctx)
 
 	api := &apiServer{manager: manager, logger: logger}
 	httpSrv := &http.Server{

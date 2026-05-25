@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/w0rxbend/instachron/services/ffmpeg-streamer/internal/compose"
+	"github.com/w0rxbend/instachron/services/ffmpeg-streamer/internal/ipcclient"
 )
 
 const (
@@ -48,8 +51,8 @@ func Run() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	ipc := newIPCReader(cfg.socketPath, logger)
-	go ipc.run(ctx)
+	ipc := ipcclient.New(cfg.socketPath, logger)
+	go ipc.Run(ctx)
 
 	if err := run(ctx, cfg, ipc, logger); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Fatalf("streamer failed: %v", err)
@@ -136,7 +139,7 @@ func streamURLFromEnv() (string, error) {
 	}
 }
 
-func run(ctx context.Context, cfg config, ipc *ipcReader, logger *log.Logger) error {
+func run(ctx context.Context, cfg config, ipc *ipcclient.Reader, logger *log.Logger) error {
 	if cfg.mergeAll {
 		logger.Printf("merging all cameras via IPC %s at %d fps", cfg.socketPath, cfg.frameRate)
 	} else {
@@ -165,7 +168,7 @@ func run(ctx context.Context, cfg config, ipc *ipcReader, logger *log.Logger) er
 	}
 }
 
-func runFFmpegSession(ctx context.Context, cfg config, ipc *ipcReader, logger *log.Logger) error {
+func runFFmpegSession(ctx context.Context, cfg config, ipc *ipcclient.Reader, logger *log.Logger) error {
 	args := ffmpegArgs(cfg)
 	cmd := exec.CommandContext(ctx, cfg.ffmpegPath, args...)
 	cmd.Stdout = os.Stdout
@@ -184,7 +187,7 @@ func runFFmpegSession(ctx context.Context, cfg config, ipc *ipcReader, logger *l
 	if cfg.mergeAll {
 		feedErr = feedMergedFrames(ctx, cfg, ipc, stdin, logger)
 	} else {
-		feedErr = feedFrames(ctx, cfg, ipc, stdin, logger)
+		feedErr = feedFrames(ctx, cfg, ipc, stdin)
 	}
 	_ = stdin.Close()
 
@@ -198,7 +201,6 @@ func runFFmpegSession(ctx context.Context, cfg config, ipc *ipcReader, logger *l
 	if waitErr != nil {
 		return fmt.Errorf("ffmpeg exited: %w", waitErr)
 	}
-
 	return nil
 }
 
@@ -222,9 +224,7 @@ func ffmpegArgs(cfg config) []string {
 	}
 }
 
-// feedFrames reads the latest JPEG for the configured camera from the IPC reader
-// and feeds it to ffmpeg at the configured frame rate.
-func feedFrames(ctx context.Context, cfg config, ipc *ipcReader, writer io.Writer, logger *log.Logger) error {
+func feedFrames(ctx context.Context, cfg config, ipc *ipcclient.Reader, writer io.Writer) error {
 	frameInterval := time.Second / time.Duration(cfg.frameRate)
 	ticker := time.NewTicker(frameInterval)
 	defer ticker.Stop()
@@ -234,7 +234,7 @@ func feedFrames(ctx context.Context, cfg config, ipc *ipcReader, writer io.Write
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			f := ipc.latest(cfg.cameraID)
+			f := ipc.Latest(cfg.cameraID)
 			if len(f) == 0 {
 				continue
 			}
@@ -245,14 +245,37 @@ func feedFrames(ctx context.Context, cfg config, ipc *ipcReader, writer io.Write
 	}
 }
 
-func looksLikeJPEG(payload []byte) bool {
-	if len(payload) < 4 {
-		return false
+func feedMergedFrames(ctx context.Context, cfg config, ipc *ipcclient.Reader, writer io.Writer, logger *log.Logger) error {
+	frameInterval := time.Second / time.Duration(cfg.frameRate)
+	ticker := time.NewTicker(frameInterval)
+	defer ticker.Stop()
+
+	var current []byte
+	var lastVersion uint64
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if v := ipc.CurrentVersion(); v != lastVersion {
+				encoded, err := compose.Canvas(ipc.AllLatest(), cfg.cellWidth, cfg.cellHeight)
+				if err != nil {
+					logger.Printf("compose failed: %v", err)
+				} else if encoded != nil {
+					current = encoded
+					lastVersion = v
+					logger.Printf("merged canvas: cameras=%d grid bytes=%d", len(ipc.AllLatest()), len(encoded))
+				}
+			}
+			if len(current) == 0 {
+				continue
+			}
+			if _, err := writer.Write(current); err != nil {
+				return fmt.Errorf("write merged canvas to ffmpeg: %w", err)
+			}
+		}
 	}
-	return payload[0] == 0xFF &&
-		payload[1] == 0xD8 &&
-		payload[len(payload)-2] == 0xFF &&
-		payload[len(payload)-1] == 0xD9
 }
 
 func envString(key string, fallback string) string {

@@ -1,8 +1,15 @@
 FROM golang:1.22-alpine AS builder
-ENV GOWORK=off
+WORKDIR /src
+
+COPY pkg/frameipc/go.mod              pkg/frameipc/
+COPY services/ffmpeg-streamer/go.mod  services/ffmpeg-streamer/
+
+RUN go work init ./services/ffmpeg-streamer ./pkg/frameipc
+
+COPY pkg/frameipc/                    pkg/frameipc/
+COPY services/ffmpeg-streamer/        services/ffmpeg-streamer/
+
 WORKDIR /src/services/ffmpeg-streamer
-COPY services/ffmpeg-streamer/ ./
-RUN go mod download
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/ffmpeg-streamer ./cmd/ffmpeg-streamer
 
 FROM alpine:3.21

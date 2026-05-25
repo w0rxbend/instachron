@@ -38,7 +38,7 @@ HTTP multipart/x-mixed-replace
 Create shared package:
 
 ```text
-/internal/streamproto
+/shared/streamproto
 ```
 
 Frame header:
@@ -147,7 +147,11 @@ disconnect if write timeout
 
 Source app should still expose HTTP multipart/x-mixed-replace for API HTTP clients.
 
-But internally it should reuse the same frame bus as TCP.
+But internally it should reuse the same frame bus as TCP. 
+
+BUT KEEP IN MIND THAT THIS TCP PROTOCOL IS NOT FOR CAMERA CLIENTS, CAMERA CLIENT uses `shared/frameipc`,
+
+WE SHOULD INTRODUCE NEW PROTOCOL FOR INTERNAL PROXY-TO-PROXY COMMUNICATION. EVENT if IT LOOKS SIMILAR TO `frameipc`, IT SHOULD BE INDEPENDENT AND NOT TIED TO CAMERA CLIENTS.
 
 ---
 

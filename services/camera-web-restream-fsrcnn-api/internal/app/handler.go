@@ -2,15 +2,15 @@ package app
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
+
+	"github.com/w0rxbend/instachron/pkg/mjpeg"
+	"github.com/w0rxbend/instachron/pkg/restream"
 )
 
-const mjpegBoundary = "instachron"
-
 type apiServer struct {
-	manager *hubManager
+	manager *restream.Manager
 	logger  *log.Logger
 }
 
@@ -23,19 +23,18 @@ func (s *apiServer) routes() http.Handler {
 }
 
 func (s *apiServer) handleCameras(w http.ResponseWriter, r *http.Request) {
-	cameras := s.manager.knownCameras()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(cameras)
+	json.NewEncoder(w).Encode(s.manager.KnownCameras())
 }
 
 func (s *apiServer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	h := s.manager.hubLookup(id)
+	h := s.manager.HubLookup(id)
 	if h == nil {
 		http.NotFound(w, r)
 		return
 	}
-	f := h.latestFrame()
+	f := h.LatestFrame()
 	if f == nil {
 		http.Error(w, "no frame received yet", http.StatusServiceUnavailable)
 		return
@@ -52,17 +51,17 @@ func (s *apiServer) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	h := s.manager.hubLookup(id)
+	h := s.manager.HubLookup(id)
 	if h == nil {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "multipart/x-mixed-replace;boundary="+mjpegBoundary)
+	w.Header().Set("Content-Type", mjpeg.ContentType)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := h.subscribe()
-	defer h.unsubscribe(ch)
+	ch := h.Subscribe()
+	defer h.Unsubscribe(ch)
 
 	for {
 		select {
@@ -72,22 +71,10 @@ func (s *apiServer) handleStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if err := writeMJPEGFrame(w, f); err != nil {
+			if err := mjpeg.WriteFrame(w, f); err != nil {
 				return
 			}
 			flusher.Flush()
 		}
 	}
-}
-
-func writeMJPEGFrame(w http.ResponseWriter, f frame) error {
-	if _, err := fmt.Fprintf(w, "--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n",
-		mjpegBoundary, len(f)); err != nil {
-		return err
-	}
-	if _, err := w.Write(f); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(w, "\r\n")
-	return err
 }

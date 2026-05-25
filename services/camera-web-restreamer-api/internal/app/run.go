@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/w0rxbend/instachron/pkg/restream"
 )
 
 const (
@@ -25,7 +27,7 @@ func Run() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	manager := newHubManager()
+	manager := restream.NewManager()
 
 	go func() {
 		ticker := time.NewTicker(time.Second)
@@ -35,13 +37,13 @@ func Run() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				manager.checkLiveness()
+				manager.CheckLiveness()
 			}
 		}
 	}()
 
-	disc := newDiscovery(originURL, manager, logger)
-	go disc.run(ctx)
+	disc := restream.NewDiscovery(originURL, manager, restream.Noop{}, logger)
+	go disc.Run(ctx)
 
 	api := &apiServer{manager: manager, logger: logger}
 	httpSrv := &http.Server{

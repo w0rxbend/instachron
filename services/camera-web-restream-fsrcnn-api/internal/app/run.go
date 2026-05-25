@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +13,11 @@ import (
 	"time"
 
 	ort "github.com/yalue/onnxruntime_go"
+
+	"github.com/w0rxbend/instachron/pkg/restream"
+	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/fsrcnn"
+	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/metrics"
+	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/pipeline"
 )
 
 type appConfig struct {
@@ -33,10 +37,9 @@ type appConfig struct {
 	jpegQuality     int
 	warmupRuns      int
 	metricsInterval time.Duration
-	logger          *log.Logger
 }
 
-func loadConfig(logger *log.Logger) *appConfig {
+func loadConfig() *appConfig {
 	numCPU := runtime.NumCPU()
 	intraOp := envInt("INTRA_OP_THREADS", 2)
 	workers := envInt("NUM_WORKERS", max(1, numCPU/intraOp))
@@ -58,14 +61,12 @@ func loadConfig(logger *log.Logger) *appConfig {
 		jpegQuality:     envInt("JPEG_QUALITY", 85),
 		warmupRuns:      envInt("WARMUP_RUNS", 5),
 		metricsInterval: time.Duration(envInt("METRICS_INTERVAL_SEC", 60)) * time.Second,
-		logger:          logger,
 	}
 }
 
 func Run() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
-
-	cfg := loadConfig(logger)
+	cfg := loadConfig()
 
 	logger.Printf("camera-web-restream-fsrcnn-api config: workers=%d intraOpThreads=%d scale=%d queue=%d max=%dx%d model=%s",
 		cfg.numWorkers, cfg.intraOpThreads, cfg.scale,
@@ -73,7 +74,6 @@ func Run() {
 		cfg.maxInputWidth, cfg.maxInputHeight,
 		cfg.modelPath)
 
-	// --- ONNX Runtime ---
 	if cfg.onnxLibPath != "" {
 		ort.SetSharedLibraryPath(cfg.onnxLibPath)
 	}
@@ -82,10 +82,9 @@ func Run() {
 	}
 	defer ort.DestroyEnvironment()
 
-	// --- Create one ONNX session per worker ---
-	sessions := make([]*fsrcnnSession, cfg.numWorkers)
+	sessions := make([]*fsrcnn.Session, cfg.numWorkers)
 	for i := range sessions {
-		sess, err := newFSRCNNSession(
+		sess, err := fsrcnn.New(
 			cfg.modelPath,
 			cfg.inputName,
 			cfg.outputName,
@@ -100,19 +99,17 @@ func Run() {
 		sessions[i] = sess
 	}
 
-	// --- Warmup ---
 	if cfg.warmupRuns > 0 {
 		logger.Printf("warming up %d session(s) with %d runs each...", cfg.numWorkers, cfg.warmupRuns)
-		warmupSessions(sessions, cfg.scale, cfg.warmupRuns)
+		pipeline.Warmup(sessions, cfg.scale, cfg.warmupRuns)
 		logger.Printf("warmup complete")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// --- Pipeline ---
-	m := &pipelineMetrics{}
-	pool := newWorkerPool(
+	m := &metrics.Pipeline{}
+	pool := pipeline.New(
 		sessions,
 		cfg.numWorkers*cfg.queueMultiplier,
 		cfg.jpegQuality,
@@ -121,12 +118,11 @@ func Run() {
 		cfg.scale,
 		m,
 	)
-	defer pool.close()
+	defer pool.Close()
 
-	go runMetricsReporter(ctx, m, cfg)
+	go m.RunReporter(ctx, cfg.metricsInterval, logger)
 
-	// --- Hub manager + liveness ---
-	manager := newHubManager()
+	manager := restream.NewManager()
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -135,16 +131,14 @@ func Run() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				manager.checkLiveness()
+				manager.CheckLiveness()
 			}
 		}
 	}()
 
-	// --- Discovery ---
-	disc := newDiscovery(cfg.originURL, manager, pool, logger)
-	go disc.run(ctx)
+	disc := restream.NewDiscovery(cfg.originURL, manager, pool, logger)
+	go disc.Run(ctx)
 
-	// --- HTTP ---
 	api := &apiServer{manager: manager, logger: logger}
 	httpSrv := &http.Server{
 		Addr:        cfg.httpAddr,
@@ -181,6 +175,3 @@ func envInt(key string, fallback int) int {
 	}
 	return fallback
 }
-
-// suppress unused import warning during development — fmt is used via Fatalf.
-var _ = fmt.Sprintf

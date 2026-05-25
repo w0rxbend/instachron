@@ -4,6 +4,8 @@ go 1.22.5
 
 require (
 	github.com/disintegration/imaging v1.6.2
+	github.com/w0rxbend/instachron/pkg/mjpeg v0.0.0
+	github.com/w0rxbend/instachron/pkg/restream v0.0.0
 	github.com/yalue/onnxruntime_go v1.30.1
 )
 
