@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -22,7 +21,6 @@ import (
 
 const (
 	defaultAddr         = ":8080"
-	defaultWebDir       = "./web"
 	defaultSocketPath   = "/tmp/instachron/frames.sock"
 	defaultCameraConfig = "./cameras.json"
 	defaultTCPAddr      = ":9001"
@@ -33,16 +31,10 @@ func Run() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 
 	addr := envString("HTTP_ADDR", defaultAddr)
-	webDir := envString("WEB_DIR", defaultWebDir)
 	socketPath := envString("IPC_SOCKET_PATH", defaultSocketPath)
 	cameraConfigPath := envString("CAMERA_CONFIG", defaultCameraConfig)
 	tcpAddr := envString("TCP_ADDR", defaultTCPAddr)
 	tcpEnabled := envString("TCP_ENABLED", "true") != "false"
-
-	indexHTML, err := os.ReadFile(filepath.Join(webDir, "index.html"))
-	if err != nil {
-		logger.Fatalf("load index.html from %s: %v", webDir, err)
-	}
 
 	rotCfg, err := rotation.Load(cameraConfigPath, logger)
 	if err != nil {
@@ -109,7 +101,7 @@ func Run() {
 		}()
 	}
 
-	h := httpapi.New(manager, rotCfg, indexHTML, logger)
+	h := httpapi.New(manager, rotCfg, logger)
 	httpSrv := &http.Server{
 		Addr:        addr,
 		Handler:     h.Routes(),

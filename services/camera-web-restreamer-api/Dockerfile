@@ -3,6 +3,8 @@ WORKDIR /src
 COPY shared/cameras/                       shared/cameras/
 COPY shared/mjpeg/                         shared/mjpeg/
 COPY shared/restream/                      shared/restream/
+COPY shared/streamproto/                   shared/streamproto/
+COPY shared/webui/                         shared/webui/
 COPY services/camera-web-restreamer-api/   services/camera-web-restreamer-api/
 WORKDIR /src/services/camera-web-restreamer-api
 RUN GOWORK=off CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/camera-web-restreamer-api ./cmd/camera-web-restreamer-api

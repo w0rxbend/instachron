@@ -6,22 +6,22 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/w0rxbend/instachron/shared/mjpeg"
 	"github.com/w0rxbend/instachron/services/camera-web-api/internal/camera"
 	"github.com/w0rxbend/instachron/services/camera-web-api/internal/rotation"
+	"github.com/w0rxbend/instachron/shared/mjpeg"
+	"github.com/w0rxbend/instachron/shared/webui"
 )
 
 // Handler serves the camera HTTP API.
 type Handler struct {
-	manager   *camera.Manager
-	rotCfg    *rotation.Config
-	indexHTML []byte
-	logger    *log.Logger
+	manager *camera.Manager
+	rotCfg  *rotation.Config
+	logger  *log.Logger
 }
 
 // New returns a Handler wired to manager and rotCfg.
-func New(manager *camera.Manager, rotCfg *rotation.Config, indexHTML []byte, logger *log.Logger) *Handler {
-	return &Handler{manager: manager, rotCfg: rotCfg, indexHTML: indexHTML, logger: logger}
+func New(manager *camera.Manager, rotCfg *rotation.Config, logger *log.Logger) *Handler {
+	return &Handler{manager: manager, rotCfg: rotCfg, logger: logger}
 }
 
 // Routes returns the HTTP mux for the camera API.
@@ -40,7 +40,7 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(h.indexHTML)
+	w.Write(webui.IndexHTML)
 }
 
 // handleCameras returns a JSON array of CameraInfo for every camera seen since

@@ -7,6 +7,7 @@ import (
 
 	"github.com/w0rxbend/instachron/shared/mjpeg"
 	"github.com/w0rxbend/instachron/shared/restream"
+	"github.com/w0rxbend/instachron/shared/webui"
 )
 
 type apiServer struct {
@@ -16,10 +17,20 @@ type apiServer struct {
 
 func (s *apiServer) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", s.handleIndex)
 	mux.HandleFunc("GET /cameras", s.handleCameras)
 	mux.HandleFunc("GET /cameras/{id}/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /cameras/{id}/stream", s.handleStream)
 	return mux
+}
+
+func (s *apiServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(webui.IndexHTML)
 }
 
 func (s *apiServer) handleCameras(w http.ResponseWriter, r *http.Request) {
