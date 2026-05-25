@@ -8,6 +8,7 @@ use (
 	./shared/streamproto
 	./shared/webui
 	./services/camera-web-api
+	./services/camera-web-restream-detector-api
 	./services/camera-web-restream-enhancer-api
 	./services/camera-web-restream-upscaler-api
 	./services/camera-web-restreamer-api
