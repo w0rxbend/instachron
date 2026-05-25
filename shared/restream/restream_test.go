@@ -171,17 +171,6 @@ func TestManagerKnownCameras(t *testing.T) {
 	}
 }
 
-func TestManagerUpstreamStarted(t *testing.T) {
-	mgr := restream.NewManager()
-	if mgr.IsUpstreamStarted("x") {
-		t.Fatal("IsUpstreamStarted should be false before MarkUpstreamStarted")
-	}
-	mgr.MarkUpstreamStarted("x")
-	if !mgr.IsUpstreamStarted("x") {
-		t.Fatal("IsUpstreamStarted should be true after MarkUpstreamStarted")
-	}
-}
-
 // --- Processor tests ---
 
 func TestNoopProcessor(t *testing.T) {

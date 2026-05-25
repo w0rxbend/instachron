@@ -123,21 +123,17 @@ func (h *Hub) LatestFrame() []byte {
 
 // ---
 
-// Manager owns all per-camera Hubs. Cameras are added lazily on discovery and
-// never removed, so offline cameras remain discoverable via the API.
+// Manager owns all per-camera Hubs. Cameras are added lazily and never
+// removed, so offline cameras remain discoverable via the API.
 type Manager struct {
 	mu      sync.RWMutex
 	hubs    map[string]*Hub
 	ordered []string
-	started map[string]bool // cameras with an upstream goroutine already running
 }
 
 // NewManager returns an empty Manager.
 func NewManager() *Manager {
-	return &Manager{
-		hubs:    make(map[string]*Hub),
-		started: make(map[string]bool),
-	}
+	return &Manager{hubs: make(map[string]*Hub)}
 }
 
 // EnsureCamera creates the hub on first discovery; on subsequent calls it only
@@ -154,20 +150,6 @@ func (m *Manager) EnsureCamera(id string, index, rotation int) (*Hub, bool) {
 	m.ordered = append(m.ordered, id)
 	m.mu.Unlock()
 	return h, true
-}
-
-// MarkUpstreamStarted records that an upstream goroutine is running for id.
-func (m *Manager) MarkUpstreamStarted(id string) {
-	m.mu.Lock()
-	m.started[id] = true
-	m.mu.Unlock()
-}
-
-// IsUpstreamStarted reports whether an upstream goroutine is already running.
-func (m *Manager) IsUpstreamStarted(id string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.started[id]
 }
 
 // HubLookup returns the Hub for id, or nil if it has never been seen.
