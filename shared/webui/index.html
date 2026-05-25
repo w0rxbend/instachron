@@ -4,116 +4,813 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>instachron</title>
+  <script>
+    (function () {
+      try {
+        const saved = localStorage.getItem('instachron.theme') || 'system';
+        const systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.dataset.theme = saved === 'light' || saved === 'dark' ? saved : (systemDark ? 'dark' : 'light');
+      } catch (err) {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    }());
+  </script>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0a0a0a; color: #ccc; font-family: ui-monospace, monospace; }
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      color-scheme: dark;
+      --bg: #090b0f;
+      --bg-top: #0d1118;
+      --panel: #11151c;
+      --panel-2: #151b24;
+      --line: #252d38;
+      --text: #e8edf4;
+      --muted: #8d98a8;
+      --green: #4ade80;
+      --red: #fb7185;
+      --amber: #fbbf24;
+      --blue: #60a5fa;
+      --feed-bg: #07090d;
+      --empty-line: #303946;
+      --soft-panel: rgba(17, 21, 28, .82);
+      --empty-bg: rgba(17, 21, 28, .58);
+      --top-glow: rgba(96, 165, 250, .14);
+      --offline-cover: rgba(8, 10, 14, .34);
+      --modal-cover: rgba(3, 6, 10, .86);
+      --modal-head: rgba(9, 11, 15, .8);
+      --button-bg: rgba(9, 11, 15, .68);
+      --button-hover: #1a202a;
+      --shadow: 0 16px 34px rgba(0,0,0,.22);
+      --modal-shadow: 0 24px 72px rgba(0,0,0,.44);
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #eef2f7;
+      --bg-top: #f8fafc;
+      --panel: #ffffff;
+      --panel-2: #f8fafc;
+      --line: #d8e0ea;
+      --text: #172033;
+      --muted: #657386;
+      --green: #16a34a;
+      --red: #e11d48;
+      --amber: #d97706;
+      --blue: #2563eb;
+      --feed-bg: #dbe3ef;
+      --empty-line: #bcc8d8;
+      --soft-panel: rgba(255, 255, 255, .84);
+      --empty-bg: rgba(255, 255, 255, .64);
+      --top-glow: rgba(37, 99, 235, .11);
+      --offline-cover: rgba(248, 250, 252, .46);
+      --modal-cover: rgba(15, 23, 42, .68);
+      --modal-head: rgba(255, 255, 255, .9);
+      --button-bg: rgba(248, 250, 252, .86);
+      --button-hover: #eef2f7;
+      --shadow: 0 14px 34px rgba(31, 41, 55, .12);
+      --modal-shadow: 0 24px 72px rgba(15, 23, 42, .32);
+    }
+
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, var(--top-glow), transparent 34rem),
+        linear-gradient(180deg, var(--bg-top) 0%, var(--bg) 46%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, a { font: inherit; }
+    button { cursor: pointer; }
+
+    .shell {
+      width: min(100%, 1680px);
+      margin: 0 auto;
+      padding: 22px;
+    }
 
     header {
-      display: flex; align-items: center; gap: 1rem; padding: .65rem 1.1rem;
-      border-bottom: 1px solid #1e1e1e;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 0 0 18px;
     }
-    header strong { color: #fff; font-size: .9rem; letter-spacing: .06em; }
-    #status { color: #555; font-size: .8rem; }
 
-    #grid { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; }
-
-    .cam {
-      position: relative; flex: 1 1 480px; background: #111;
-      min-height: 120px; overflow: hidden;
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
     }
-    .cam img { display: block; width: 100%; height: auto; }
 
-    /* offline overlay */
-    .cam.offline img { filter: grayscale(1) brightness(.45); }
-    .cam.offline::after {
-      content: "OFFLINE";
-      position: absolute; inset: 0;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 1.1rem; letter-spacing: .2em; color: #ff4444;
-      background: rgba(0,0,0,.35);
+    .mark {
+      width: 46px;
+      height: 46px;
+      flex: 0 0 auto;
+      filter: drop-shadow(0 16px 28px rgba(20, 184, 166, .18));
+    }
+
+    .mark svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.12rem;
+      font-weight: 720;
+      letter-spacing: 0;
+      line-height: 1.15;
+    }
+
+    .subtitle {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: .82rem;
+      line-height: 1.25;
+    }
+
+    .stats, .controls {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-panel);
+      color: var(--muted);
+      font-size: .82rem;
+      white-space: nowrap;
+    }
+
+    .pill strong { color: var(--text); font-weight: 680; }
+    .pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--amber);
+      box-shadow: 0 0 0 4px rgba(251, 191, 36, .13);
+    }
+    .pulse.ok { background: var(--green); box-shadow: 0 0 0 4px rgba(74, 222, 128, .12); }
+    .pulse.bad { background: var(--red); box-shadow: 0 0 0 4px rgba(251, 113, 133, .12); }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .search {
+      flex: 1 1 280px;
+      max-width: 440px;
+      height: 38px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-panel);
+      color: var(--text);
+      outline: 0;
+    }
+
+    .search::placeholder { color: var(--muted); }
+    .search:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(96, 165, 250, .22); }
+
+    .segmented {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-panel);
+      gap: 2px;
+    }
+
+    .segmented button {
+      min-height: 30px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-size: .8rem;
+    }
+
+    .segmented button.active {
+      background: var(--panel-2);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-panel);
+      color: var(--muted);
+      font-size: .8rem;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .toggle input { accent-color: var(--blue); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      align-items: start;
+    }
+
+    .empty {
+      grid-column: 1 / -1;
+      min-height: 300px;
+      display: grid;
+      place-items: center;
+      border: 1px dashed var(--empty-line);
+      border-radius: 8px;
+      background: var(--empty-bg);
+      color: var(--muted);
+      font-size: .95rem;
+    }
+
+    .camera {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .camera:focus-within {
+      outline: 2px solid rgba(96, 165, 250, .72);
+      outline-offset: 2px;
+    }
+
+    .feed-button {
+      display: block;
+      width: 100%;
+      padding: 0;
+      border: 0;
+      background: var(--feed-bg);
+      color: inherit;
+      text-align: left;
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+    }
+
+    .feed-button img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+      background: var(--feed-bg);
+      transition: transform .18s ease, filter .18s ease;
+    }
+    body.fit-contain .feed-button img { object-fit: contain; }
+
+    .feed-button:hover img { transform: scale(1.015); }
+    .camera.offline .feed-button img { filter: grayscale(1) brightness(.48); }
+
+    .offline-badge {
+      display: none;
+      position: absolute;
+      inset: 0;
+      place-items: center;
       pointer-events: none;
+      background: var(--offline-cover);
+      color: #ffe4e6;
+      font-size: .86rem;
+      font-weight: 760;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .camera.offline .offline-badge { display: grid; }
+
+    .camera-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 52px;
+      padding: 10px 12px;
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border-top: 1px solid var(--line);
     }
 
-    .cam-label {
-      position: absolute; bottom: 6px; left: 8px;
-      background: rgba(0,0,0,.72); padding: 2px 8px;
-      font-size: .7rem; border-radius: 2px; letter-spacing: .04em;
+    .camera-title {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+      font-size: .9rem;
+      font-weight: 680;
     }
-    .cam-label .dot {
-      display: inline-block; width: 7px; height: 7px;
-      border-radius: 50%; margin-right: 5px; vertical-align: middle;
-      background: #33cc66;
-    }
-    .cam.offline .cam-label .dot { background: #ff4444; }
 
-    .cam-actions {
-      position: absolute; top: 6px; right: 8px; display: flex; gap: 4px;
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(74, 222, 128, .12);
+      flex: 0 0 auto;
     }
-    .cam-actions a {
-      background: rgba(0,0,0,.72); padding: 2px 8px; font-size: .7rem;
-      border-radius: 2px; color: #aaa; text-decoration: none;
+    .camera.offline .dot { background: var(--red); box-shadow: 0 0 0 4px rgba(251, 113, 133, .12); }
+
+    .camera-title span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .cam-actions a:hover { color: #fff; }
+
+    .camera-meta {
+      color: var(--muted);
+      font-size: .76rem;
+      white-space: nowrap;
+    }
+
+    .camera-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+
+    .icon-link {
+      display: inline-grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--button-bg);
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .icon-link:hover { color: var(--text); border-color: var(--blue); }
+    .icon-link svg {
+      width: 17px;
+      height: 17px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      background: var(--modal-cover);
+      backdrop-filter: blur(10px);
+    }
+    .modal.open { display: grid; grid-template-rows: auto 1fr; }
+
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--modal-head);
+    }
+
+    .modal-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      font-weight: 720;
+    }
+
+    .modal-title small {
+      color: var(--muted);
+      font-weight: 560;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .close {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-panel);
+      color: var(--text);
+      font-size: 1.35rem;
+      line-height: 1;
+    }
+    .close:hover { border-color: var(--blue); background: var(--button-hover); }
+
+    .modal-body {
+      display: grid;
+      place-items: center;
+      min-height: 0;
+      padding: 18px;
+    }
+
+    .modal-body img {
+      display: block;
+      max-width: 100%;
+      max-height: calc(100vh - 104px);
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--feed-bg);
+      box-shadow: var(--modal-shadow);
+    }
+
+    body.modal-active { overflow: hidden; }
+
+    @media (max-width: 1120px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 720px) {
+      .shell { padding: 14px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .stats, .toolbar, .controls { width: 100%; justify-content: flex-start; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .search { max-width: none; width: 100%; flex-basis: auto; }
+      .grid { grid-template-columns: 1fr; gap: 12px; }
+      .camera-bar { align-items: flex-start; flex-direction: column; }
+      .camera-actions { width: 100%; }
+      .icon-link { width: 36px; height: 34px; }
+      .modal-head { padding: 12px 14px; }
+      .modal-body { padding: 10px; }
+      .modal-body img { max-height: calc(100vh - 84px); }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <strong>instachron</strong>
-    <span id="status">scanning&hellip;</span>
-  </header>
-  <div id="grid"></div>
+  <main class="shell">
+    <header>
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 64 64" role="img">
+            <defs>
+              <linearGradient id="logo-bg" x1="8" y1="7" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#22d3ee"></stop>
+                <stop offset=".48" stop-color="#2563eb"></stop>
+                <stop offset="1" stop-color="#111827"></stop>
+              </linearGradient>
+              <radialGradient id="logo-core" cx="34" cy="30" r="19" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#ffffff"></stop>
+                <stop offset=".42" stop-color="#a7f3d0"></stop>
+                <stop offset="1" stop-color="#14b8a6"></stop>
+              </radialGradient>
+              <linearGradient id="logo-sweep" x1="18" y1="16" x2="47" y2="49" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#fef3c7" stop-opacity=".95"></stop>
+                <stop offset="1" stop-color="#67e8f9" stop-opacity=".55"></stop>
+              </linearGradient>
+            </defs>
+            <rect x="5" y="5" width="54" height="54" rx="17" fill="url(#logo-bg)"></rect>
+            <path d="M14 39c5.5 8.5 13.8 12.2 22.6 10.3 8.1-1.8 13.2-8.5 15.4-17.3-3.5-9.1-10.1-15.1-19.7-15.1-9.4 0-16.1 5.8-20.3 15.1.6 2.5 1.3 4.8 2 7z" fill="rgba(3,7,18,.52)"></path>
+            <path d="M12 32c4.3-9.3 11-15.1 20.3-15.1 9.6 0 16.2 6 19.7 15.1-3.7 9.1-10.2 15.1-19.7 15.1C23 47.1 16.3 41.3 12 32z" fill="none" stroke="rgba(255,255,255,.78)" stroke-width="2.4" stroke-linejoin="round"></path>
+            <circle cx="32" cy="32" r="13.5" fill="rgba(3,7,18,.7)" stroke="rgba(255,255,255,.38)" stroke-width="1.8"></circle>
+            <path d="M32 18.5a13.5 13.5 0 0 1 12.7 18.1L32 32V18.5z" fill="url(#logo-sweep)" opacity=".9"></path>
+            <circle cx="32" cy="32" r="7.2" fill="url(#logo-core)"></circle>
+            <circle cx="32" cy="32" r="3.6" fill="#08111f"></circle>
+            <circle cx="34" cy="29.8" r="1.4" fill="#ffffff"></circle>
+            <path d="M32 13v5.5M43.2 20.8l3.8-3.8M45.5 32H51M32 45.5V51M20.8 20.8 17 17M13 32h5.5" fill="none" stroke="rgba(255,255,255,.7)" stroke-width="2" stroke-linecap="round"></path>
+            <path d="M16 47l9-5.1 3.8 7.1-6.3 3.5A17.4 17.4 0 0 1 16 47z" fill="#14b8a6" opacity=".95"></path>
+            <path d="M45 13l4.6 4.6-5.3 3.3-3.1-3.1L45 13z" fill="#f59e0b" opacity=".95"></path>
+            <circle cx="50" cy="14" r="3.8" fill="#fb7185" stroke="rgba(255,255,255,.78)" stroke-width="1.6"></circle>
+          </svg>
+        </span>
+        <div>
+          <h1>instachron</h1>
+          <span class="subtitle">Live surveillance dashboard</span>
+        </div>
+      </div>
+      <div class="stats" aria-live="polite">
+        <span class="pill"><span id="health-dot" class="pulse"></span><strong id="online-count">0</strong> online</span>
+        <span class="pill"><strong id="total-count">0</strong> total</span>
+        <span id="status" class="pill">scanning...</span>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <input id="search" class="search" type="search" autocomplete="off" placeholder="Filter cameras">
+      <div class="controls">
+        <span class="segmented" aria-label="Theme">
+          <button id="theme-system" type="button" data-theme-value="system">System</button>
+          <button id="theme-light" type="button" data-theme-value="light">Light</button>
+          <button id="theme-dark" type="button" data-theme-value="dark">Dark</button>
+        </span>
+        <span class="segmented" aria-label="Image fit">
+          <button id="fit-crop" type="button" data-fit-value="cover">Crop</button>
+          <button id="fit-contain" type="button" data-fit-value="contain">Fit</button>
+        </span>
+        <label class="toggle"><input id="show-offline" type="checkbox" checked> Offline</label>
+      </div>
+    </div>
+
+    <section id="grid" class="grid" aria-label="Camera feeds">
+      <div class="empty">Scanning for cameras...</div>
+    </section>
+  </main>
+
+  <div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-name">
+    <div class="modal-head">
+      <div class="modal-title">
+        <span id="modal-dot" class="dot"></span>
+        <span id="modal-name">Camera</span>
+        <small id="modal-id"></small>
+      </div>
+      <button id="modal-close" class="close" type="button" aria-label="Close">x</button>
+    </div>
+    <div id="modal-body" class="modal-body">
+      <img id="modal-img" alt="">
+    </div>
+  </div>
+
   <script>
-    const grid   = document.getElementById('grid');
+    const grid = document.getElementById('grid');
     const status = document.getElementById('status');
-    const known  = new Map(); // id -> div element
+    const healthDot = document.getElementById('health-dot');
+    const onlineCount = document.getElementById('online-count');
+    const totalCount = document.getElementById('total-count');
+    const searchInput = document.getElementById('search');
+    const showOfflineInput = document.getElementById('show-offline');
+    const themeButtons = Array.from(document.querySelectorAll('[data-theme-value]'));
+    const fitButtons = Array.from(document.querySelectorAll('[data-fit-value]'));
+    const modal = document.getElementById('modal');
+    const modalImg = document.getElementById('modal-img');
+    const modalName = document.getElementById('modal-name');
+    const modalId = document.getElementById('modal-id');
+    const modalDot = document.getElementById('modal-dot');
+    const closeButton = document.getElementById('modal-close');
+    const known = new Map();
+    let activeCamera = null;
+    const cameraIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4l1.6 2H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.9l1.6-2h5z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg>';
+    const openIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17L17 7"></path><path d="M9 7h8v8"></path><path d="M5 5v14h14"></path></svg>';
+    const systemTheme = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
-    function addCamera(cam) {
-      const div = document.createElement('div');
-      div.className = 'cam' + (cam.online ? '' : ' offline');
-      div.dataset.id = cam.id;
-
-      div.innerHTML =
-        '<img src="/cameras/' + cam.id + '/stream" alt="camera ' + cam.id + '">' +
-        '<span class="cam-label"><span class="dot"></span>cam ' + cam.index + ' &middot; ' + cam.id + '</span>' +
-        '<span class="cam-actions">' +
-          '<a href="/cameras/' + cam.id + '/snapshot" target="_blank">snapshot</a>' +
-          '<a href="/cameras/' + cam.id + '/stream" target="_blank">stream</a>' +
-        '</span>';
-
-      grid.appendChild(div);
-      known.set(cam.id, div);
+    function storageGet(key, fallback) {
+      try {
+        return localStorage.getItem(key) || fallback;
+      } catch (err) {
+        return fallback;
+      }
     }
 
-    function updateCamera(cam, div) {
-      if (cam.online) {
-        div.classList.remove('offline');
-      } else {
-        div.classList.add('offline');
+    function storageSet(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (err) {}
+    }
+
+    function resolveTheme(value) {
+      if (value === 'light' || value === 'dark') return value;
+      return systemTheme && systemTheme.matches ? 'dark' : 'light';
+    }
+
+    function applyTheme(value) {
+      const resolved = resolveTheme(value);
+      document.documentElement.dataset.theme = resolved;
+      themeButtons.forEach(button => {
+        button.classList.toggle('active', button.dataset.themeValue === value);
+        button.setAttribute('aria-pressed', button.dataset.themeValue === value ? 'true' : 'false');
+      });
+    }
+
+    function applyFit(value) {
+      const fit = value === 'contain' ? 'contain' : 'cover';
+      document.body.classList.toggle('fit-contain', fit === 'contain');
+      fitButtons.forEach(button => {
+        button.classList.toggle('active', button.dataset.fitValue === fit);
+        button.setAttribute('aria-pressed', button.dataset.fitValue === fit ? 'true' : 'false');
+      });
+    }
+
+    function streamURL(id) {
+      return '/cameras/' + encodeURIComponent(id) + '/stream';
+    }
+
+    function snapshotURL(id) {
+      return '/cameras/' + encodeURIComponent(id) + '/snapshot';
+    }
+
+    function cameraName(cam) {
+      return 'Camera ' + cam.index;
+    }
+
+    function clearEmptyState() {
+      const empty = grid.querySelector('.empty');
+      if (empty) empty.remove();
+    }
+
+    function setCameraState(card, cam) {
+      card.classList.toggle('offline', !cam.online);
+      card.querySelector('.camera-name').textContent = cameraName(cam);
+      card.querySelector('.camera-meta').textContent = cam.online ? 'live' : 'offline';
+      card.querySelector('.feed-button').setAttribute('aria-label', 'Open ' + cameraName(cam));
+    }
+
+    function cameraMatches(cam) {
+      const query = searchInput.value.trim().toLowerCase();
+      const visibleByState = showOfflineInput.checked || cam.online;
+      const visibleByQuery = !query || cameraName(cam).toLowerCase().includes(query) || String(cam.id).toLowerCase().includes(query);
+      return visibleByState && visibleByQuery;
+    }
+
+    function applyFilters() {
+      const existingEmpty = grid.querySelector('.filter-empty');
+      if (existingEmpty) existingEmpty.remove();
+
+      if (known.size === 0) return;
+
+      let visible = 0;
+      known.forEach(entry => {
+        const show = cameraMatches(entry.cam);
+        entry.card.hidden = !show;
+        if (show) visible++;
+      });
+
+      if (visible === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty filter-empty';
+        empty.textContent = 'No matching cameras';
+        grid.appendChild(empty);
       }
+    }
+
+    function addCamera(cam) {
+      clearEmptyState();
+
+      const card = document.createElement('article');
+      card.className = 'camera';
+      card.dataset.id = cam.id;
+      card.innerHTML =
+        '<button class="feed-button" type="button">' +
+          '<img src="' + streamURL(cam.id) + '" alt="' + cameraName(cam) + '">' +
+        '</button>' +
+        '<span class="offline-badge">Offline</span>' +
+        '<div class="camera-bar">' +
+          '<div class="camera-title"><span class="dot"></span><span class="camera-name">' + cameraName(cam) + '</span><span class="camera-meta"></span></div>' +
+          '<div class="camera-actions">' +
+            '<a class="icon-link" href="' + snapshotURL(cam.id) + '" target="_blank" rel="noopener" title="Snapshot" aria-label="Snapshot">' + cameraIcon + '</a>' +
+            '<a class="icon-link" href="' + streamURL(cam.id) + '" target="_blank" rel="noopener" title="Stream" aria-label="Stream">' + openIcon + '</a>' +
+          '</div>' +
+        '</div>';
+
+      card.querySelector('.feed-button').addEventListener('click', () => openModal(known.get(cam.id).cam));
+      grid.appendChild(card);
+      known.set(cam.id, { card, cam });
+      setCameraState(card, cam);
+      applyFilters();
+    }
+
+    function updateCamera(cam, entry) {
+      entry.cam = cam;
+      setCameraState(entry.card, cam);
+
+      if (activeCamera && activeCamera.id === cam.id) {
+        activeCamera = cam;
+        modalName.textContent = cameraName(cam);
+        modalId.textContent = 'ID ' + cam.id;
+        modalDot.style.background = cam.online ? 'var(--green)' : 'var(--red)';
+      }
+    }
+
+    function openModal(cam) {
+      activeCamera = cam;
+      modalName.textContent = cameraName(cam);
+      modalId.textContent = 'ID ' + cam.id;
+      modalDot.style.background = cam.online ? 'var(--green)' : 'var(--red)';
+      modalImg.src = streamURL(cam.id);
+      modalImg.alt = cameraName(cam);
+      modal.classList.add('open');
+      document.body.classList.add('modal-active');
+      closeButton.focus();
+    }
+
+    function closeModal() {
+      modal.classList.remove('open');
+      document.body.classList.remove('modal-active');
+      modalImg.removeAttribute('src');
+      activeCamera = null;
+    }
+
+    function renderEmpty(message) {
+      known.clear();
+      grid.innerHTML = '<div class="empty">' + message + '</div>';
+    }
+
+    function updateSummary(cameras) {
+      const online = cameras.filter(cam => cam.online).length;
+      onlineCount.textContent = online;
+      totalCount.textContent = cameras.length;
+      healthDot.className = 'pulse' + (cameras.length === 0 ? '' : online > 0 ? ' ok' : ' bad');
+      status.textContent = cameras.length === 0
+        ? 'no cameras found'
+        : (cameras.length - online) + ' offline';
     }
 
     function refresh() {
       fetch('/cameras')
-        .then(r => r.json())
+        .then(response => {
+          if (!response.ok) throw new Error('bad response');
+          return response.json();
+        })
         .then(cameras => {
-          const onlineCount = cameras.filter(c => c.online).length;
-          status.textContent =
-            cameras.length === 0
-              ? 'no cameras found'
-              : onlineCount + ' online, ' + (cameras.length - onlineCount) + ' offline';
+          updateSummary(cameras);
+
+          if (cameras.length === 0) {
+            renderEmpty('No cameras found');
+            return;
+          }
 
           cameras.forEach(cam => {
-            const existing = known.get(cam.id);
-            if (existing) {
-              updateCamera(cam, existing);
+            const entry = known.get(cam.id);
+            if (entry) {
+              updateCamera(cam, entry);
             } else {
               addCamera(cam);
             }
           });
+
+          for (const [id, entry] of known) {
+            if (!cameras.some(cam => cam.id === id)) {
+              entry.card.remove();
+              known.delete(id);
+            }
+          }
+
+          applyFilters();
         })
-        .catch(() => { status.textContent = 'connection error'; });
+        .catch(() => {
+          healthDot.className = 'pulse bad';
+          status.textContent = 'connection error';
+          if (known.size === 0) renderEmpty('Connection error');
+        });
     }
 
+    closeButton.addEventListener('click', closeModal);
+    modal.addEventListener('click', event => {
+      if (event.target === modal || event.target.id === 'modal-body') closeModal();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && modal.classList.contains('open')) closeModal();
+    });
+    searchInput.addEventListener('input', applyFilters);
+    showOfflineInput.addEventListener('change', () => {
+      storageSet('instachron.showOffline', showOfflineInput.checked ? 'true' : 'false');
+      applyFilters();
+    });
+    themeButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        storageSet('instachron.theme', button.dataset.themeValue);
+        applyTheme(button.dataset.themeValue);
+      });
+    });
+    fitButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        storageSet('instachron.fit', button.dataset.fitValue);
+        applyFit(button.dataset.fitValue);
+      });
+    });
+    if (systemTheme && systemTheme.addEventListener) {
+      systemTheme.addEventListener('change', () => {
+        if (storageGet('instachron.theme', 'system') === 'system') applyTheme('system');
+      });
+    } else if (systemTheme && systemTheme.addListener) {
+      systemTheme.addListener(() => {
+        if (storageGet('instachron.theme', 'system') === 'system') applyTheme('system');
+      });
+    }
+
+    showOfflineInput.checked = storageGet('instachron.showOffline', 'true') !== 'false';
+    applyTheme(storageGet('instachron.theme', 'system'));
+    applyFit(storageGet('instachron.fit', 'cover'));
     refresh();
     setInterval(refresh, 3000);
   </script>
