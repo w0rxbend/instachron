@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/metrics"
-	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/pipeline"
+	"github.com/w0rxbend/instachron/services/camera-web-restream-upscaler-api/internal/metrics"
+	"github.com/w0rxbend/instachron/services/camera-web-restream-upscaler-api/internal/pipeline"
 	"github.com/w0rxbend/instachron/shared/restream"
 	"github.com/w0rxbend/instachron/shared/streamproto"
 )
@@ -56,7 +56,7 @@ func Run() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	cfg := loadConfig()
 
-	logger.Printf("camera-web-restream-fsrcnn-api config: transform=lanczos-%dx workers=%d queue=%d max=%dx%d",
+	logger.Printf("camera-web-restream-upscaler-api config: transform=lanczos-%dx workers=%d queue=%d max=%dx%d",
 		cfg.scale, cfg.numWorkers,
 		cfg.numWorkers*cfg.queueMultiplier,
 		cfg.maxInputWidth, cfg.maxInputHeight)
@@ -142,7 +142,7 @@ func Run() {
 		}
 	}()
 
-	logger.Printf("camera-web-restream-fsrcnn-api listening on %s  upstream=%s  tcp=%s (enabled=%v)",
+	logger.Printf("camera-web-restream-upscaler-api listening on %s  upstream=%s  tcp=%s (enabled=%v)",
 		cfg.httpAddr, cfg.upstreamTCPAddr, cfg.tcpAddr, cfg.tcpEnabled)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("HTTP server failed: %v", err)

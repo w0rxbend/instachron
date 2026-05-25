@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/disintegration/imaging"
-	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/imageio"
-	"github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api/internal/metrics"
+	"github.com/w0rxbend/instachron/services/camera-web-restream-upscaler-api/internal/imageio"
+	"github.com/w0rxbend/instachron/services/camera-web-restream-upscaler-api/internal/metrics"
 )
 
 type job struct {

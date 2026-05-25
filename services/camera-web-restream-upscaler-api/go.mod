@@ -1,4 +1,4 @@
-module github.com/w0rxbend/instachron/services/camera-web-restream-fsrcnn-api
+module github.com/w0rxbend/instachron/services/camera-web-restream-upscaler-api
 
 go 1.22.5
 
