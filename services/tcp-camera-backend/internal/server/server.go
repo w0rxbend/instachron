@@ -8,11 +8,15 @@ import (
 	"io"
 	"log"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/w0rxbend/instachron/services/tcp-camera-backend/internal/protocol"
 )
+
+const frameStatsInterval = 5 * time.Second
 
 type Publisher interface {
 	Publish(cameraID uint32, jpeg []byte)
@@ -115,6 +119,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}()
 
 	headerBytes := make([]byte, protocol.HeaderSize)
+	stats := newFrameStats(s.logger, remoteAddr, frameStatsInterval)
+	defer stats.Stop()
+	go stats.Run()
 
 	for {
 		if s.readTimeout > 0 {
@@ -159,8 +166,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			s.publisher.Publish(header.CameraID, payload)
 		}
 
-		s.logger.Printf("published frame: camera=%d seq=%d camera_ms=%d bytes=%d",
-			header.CameraID, header.Sequence, header.TimestampMs, header.PayloadSize)
+		stats.Record(header.CameraID)
 	}
 }
 
@@ -178,4 +184,87 @@ func (s *Server) readFrameHeader(conn net.Conn, headerBytes []byte) (protocol.He
 	default:
 		return protocol.Header{}, fmt.Errorf("invalid frame magic: 0x%08x", magic)
 	}
+}
+
+type frameStats struct {
+	logger   *log.Logger
+	addr     string
+	interval time.Duration
+	done     chan struct{}
+	once     sync.Once
+
+	mu       sync.Mutex
+	byCamera map[uint32]uint64
+}
+
+func newFrameStats(logger *log.Logger, addr string, interval time.Duration) *frameStats {
+	return &frameStats{
+		logger:   logger,
+		addr:     addr,
+		interval: interval,
+		done:     make(chan struct{}),
+		byCamera: make(map[uint32]uint64),
+	}
+}
+
+func (s *frameStats) Record(cameraID uint32) {
+	s.mu.Lock()
+	s.byCamera[cameraID]++
+	s.mu.Unlock()
+}
+
+func (s *frameStats) Run() {
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.logAndReset()
+		case <-s.done:
+			return
+		}
+	}
+}
+
+func (s *frameStats) Stop() {
+	s.once.Do(func() {
+		close(s.done)
+	})
+}
+
+func (s *frameStats) logAndReset() {
+	s.mu.Lock()
+	if len(s.byCamera) == 0 {
+		s.mu.Unlock()
+		return
+	}
+
+	counts := make(map[uint32]uint64, len(s.byCamera))
+	var total uint64
+	for cameraID, frames := range s.byCamera {
+		counts[cameraID] = frames
+		total += frames
+	}
+	clear(s.byCamera)
+	s.mu.Unlock()
+
+	s.logger.Printf("frame stats: addr=%s interval=%s frames=%d camera_frames=%s",
+		s.addr, s.interval, total, formatCameraCounts(counts))
+}
+
+func formatCameraCounts(counts map[uint32]uint64) string {
+	cameraIDs := make([]uint32, 0, len(counts))
+	for cameraID := range counts {
+		cameraIDs = append(cameraIDs, cameraID)
+	}
+	sort.Slice(cameraIDs, func(i, j int) bool {
+		return cameraIDs[i] < cameraIDs[j]
+	})
+
+	parts := make([]string, 0, len(cameraIDs))
+	for _, cameraID := range cameraIDs {
+		parts = append(parts, fmt.Sprintf("camera=%d frames=%d", cameraID, counts[cameraID]))
+	}
+	return strings.Join(parts, ", ")
 }
