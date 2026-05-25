@@ -10,5 +10,5 @@
   "num_classes": 80,
   "jpeg_quality": 85,
   "allowed_classes": ["person"],
-  "debug": true
+  "debug": false
 }

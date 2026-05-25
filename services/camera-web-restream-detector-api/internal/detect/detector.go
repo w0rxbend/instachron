@@ -66,9 +66,9 @@ type OutputLayout struct {
 	Transposed  bool // true = [1, numBoxes, numChannels]; false = [1, numChannels, numBoxes]
 }
 
-// Detector runs YOLOv8 inference. Process is safe for concurrent callers.
-// While inference is in progress, the last annotated frame is served instead
-// of the raw input, so the stream always shows the most recent detections.
+// Detector runs YOLOv8 inference.
+// Inference runs every detectEveryN frames; every frame is annotated with the
+// most recently computed detections so bounding boxes are visible on all frames.
 type Detector struct {
 	cfg          Config
 	session      *ort.AdvancedSession
@@ -77,16 +77,17 @@ type Detector struct {
 	layout       OutputLayout
 	allowedIDs   map[int]struct{} // nil = all classes allowed
 	logger       *log.Logger
-	mu           sync.Mutex
+	mu           sync.Mutex // guards ORT session
 	bufPool      sync.Pool
 
-	lastAnnot atomic.Pointer[[]byte] // most recent annotated JPEG
+	lastDetsMu sync.RWMutex
+	lastDets   []Detection // most recent inference result
 
 	// periodic stats (logged every ~10s)
-	frameIn  atomic.Int64
-	frameDet atomic.Int64
-	frameDrp atomic.Int64
-	lastLog  atomic.Int64 // UnixNano of last stats log
+	frameIn    atomic.Int64
+	frameDet   atomic.Int64
+	lastLog    atomic.Int64 // UnixNano of last stats log
+	frameCount atomic.Int64 // monotonic counter for decimation
 }
 
 var ortOnce sync.Once
@@ -251,41 +252,43 @@ func (d *Detector) Detect(jpeg []byte) ([]Detection, []byte, error) {
 	return d.infer(jpeg)
 }
 
+const detectEveryN = 15
+
 // Process implements restream.Processor.
-// When inference is already running the last annotated frame is served instead
-// of the raw input so viewers always see the most recent bounding boxes.
+// Inference runs on every Nth frame to refresh detections; every frame is
+// annotated with the most recent detections so bounding boxes are always visible.
 func (d *Detector) Process(jpeg []byte, push func([]byte)) {
+	n := d.frameCount.Add(1)
 	d.frameIn.Add(1)
 
-	if !d.mu.TryLock() {
-		d.frameDrp.Add(1)
-		if last := d.lastAnnot.Load(); last != nil {
-			push(*last)
+	// Refresh detections on every Nth frame (non-blocking — skip if already running).
+	if n%detectEveryN == 0 && d.mu.TryLock() {
+		dets, err := d.inferenceOnly(jpeg)
+		d.mu.Unlock()
+		if err != nil {
+			d.logger.Printf("detect: inference error: %v", err)
 		} else {
-			push(jpeg)
+			if len(dets) > 0 {
+				d.frameDet.Add(1)
+			}
+			d.lastDetsMu.Lock()
+			d.lastDets = dets
+			d.lastDetsMu.Unlock()
 		}
-		d.logStats()
-		return
 	}
-	defer d.mu.Unlock()
 
-	dets, annotated, err := d.infer(jpeg)
+	// Annotate every frame with the latest known detections.
+	d.lastDetsMu.RLock()
+	dets := d.lastDets
+	d.lastDetsMu.RUnlock()
+
+	annotated, err := d.annotateJPEG(jpeg, dets)
 	if err != nil {
-		d.logger.Printf("detect: inference error: %v", err)
+		d.logger.Printf("detect: annotate error: %v", err)
 		push(jpeg)
-		d.logStats()
-		return
+	} else {
+		push(annotated)
 	}
-	if annotated == nil {
-		push(jpeg)
-		d.logStats()
-		return
-	}
-	if len(dets) > 0 {
-		d.frameDet.Add(1)
-	}
-	d.lastAnnot.Store(&annotated)
-	push(annotated)
 	d.logStats()
 }
 
@@ -301,23 +304,22 @@ func (d *Detector) logStats() {
 	}
 	in := d.frameIn.Load()
 	det := d.frameDet.Load()
-	drp := d.frameDrp.Load()
-	d.logger.Printf("detect stats: %d frames in, %d with detections, %d deferred to cache (conf_threshold=%.2f)",
-		in, det, drp, d.cfg.ConfThreshold)
+	d.logger.Printf("detect stats: %d frames annotated, %d inference runs with detections (every %dth frame, conf_threshold=%.2f)",
+		in, det, detectEveryN, d.cfg.ConfThreshold)
 }
 
-// infer is the internal pipeline; caller must hold d.mu.
-func (d *Detector) infer(jpeg []byte) ([]Detection, []byte, error) {
+// inferenceOnly runs the ONNX model and returns detections. Caller must hold d.mu.
+func (d *Detector) inferenceOnly(jpeg []byte) ([]Detection, error) {
 	src, err := imaging.Decode(bytes.NewReader(jpeg))
 	if err != nil {
-		return nil, nil, fmt.Errorf("decode: %w", err)
+		return nil, fmt.Errorf("decode: %w", err)
 	}
 
 	lb := letterbox(src, d.cfg.InputWidth, d.cfg.InputHeight)
 	toTensor(lb.img, d.inputTensor.GetData())
 
 	if err := d.session.Run(); err != nil {
-		return nil, nil, fmt.Errorf("inference: %w", err)
+		return nil, fmt.Errorf("inference: %w", err)
 	}
 
 	raw := d.outputTensor.GetData()
@@ -353,6 +355,16 @@ func (d *Detector) infer(jpeg []byte) ([]Detection, []byte, error) {
 		}
 	}
 
+	return dets, nil
+}
+
+// annotateJPEG draws dets onto jpeg and returns the encoded result.
+func (d *Detector) annotateJPEG(jpeg []byte, dets []Detection) ([]byte, error) {
+	src, err := imaging.Decode(bytes.NewReader(jpeg))
+	if err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+
 	nrgba := toNRGBA(src)
 	annotated := Annotate(nrgba, dets)
 
@@ -361,12 +373,22 @@ func (d *Detector) infer(jpeg []byte) ([]Detection, []byte, error) {
 	defer d.bufPool.Put(buf)
 
 	if err := imaging.Encode(buf, annotated, imaging.JPEG, imaging.JPEGQuality(d.cfg.JPEGQuality)); err != nil {
-		return dets, nil, fmt.Errorf("encode: %w", err)
+		return nil, fmt.Errorf("encode: %w", err)
 	}
 
 	out := make([]byte, buf.Len())
 	copy(out, buf.Bytes())
-	return dets, out, nil
+	return out, nil
+}
+
+// infer is used by Detect (full pipeline, caller must hold d.mu).
+func (d *Detector) infer(jpeg []byte) ([]Detection, []byte, error) {
+	dets, err := d.inferenceOnly(jpeg)
+	if err != nil {
+		return nil, nil, err
+	}
+	annotated, err := d.annotateJPEG(jpeg, dets)
+	return dets, annotated, err
 }
 
 func toNRGBA(src image.Image) *image.NRGBA {
