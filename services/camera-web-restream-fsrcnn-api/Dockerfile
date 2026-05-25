@@ -4,26 +4,26 @@
 FROM golang:1.22-bookworm AS builder
 WORKDIR /src
 
-COPY pkg/cameras/go.mod                           pkg/cameras/
-COPY pkg/mjpeg/go.mod                             pkg/mjpeg/
-COPY pkg/restream/go.mod                          pkg/restream/
+COPY shared/cameras/go.mod                           shared/cameras/
+COPY shared/mjpeg/go.mod                             shared/mjpeg/
+COPY shared/restream/go.mod                          shared/restream/
 COPY services/camera-web-restream-fsrcnn-api/go.mod \
      services/camera-web-restream-fsrcnn-api/go.sum \
      services/camera-web-restream-fsrcnn-api/
 
 RUN go work init \
     ./services/camera-web-restream-fsrcnn-api \
-    ./pkg/cameras \
-    ./pkg/mjpeg \
-    ./pkg/restream
+    ./shared/cameras \
+    ./shared/mjpeg \
+    ./shared/restream
 
 WORKDIR /src/services/camera-web-restream-fsrcnn-api
 RUN go mod download
 
 WORKDIR /src
-COPY pkg/cameras/                                 pkg/cameras/
-COPY pkg/mjpeg/                                   pkg/mjpeg/
-COPY pkg/restream/                                pkg/restream/
+COPY shared/cameras/                                 shared/cameras/
+COPY shared/mjpeg/                                   shared/mjpeg/
+COPY shared/restream/                                shared/restream/
 COPY services/camera-web-restream-fsrcnn-api/     services/camera-web-restream-fsrcnn-api/
 
 WORKDIR /src/services/camera-web-restream-fsrcnn-api

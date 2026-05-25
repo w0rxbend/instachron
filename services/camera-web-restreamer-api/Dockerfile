@@ -1,20 +1,20 @@
 FROM golang:1.22-alpine AS builder
 WORKDIR /src
 
-COPY pkg/cameras/go.mod                       pkg/cameras/
-COPY pkg/mjpeg/go.mod                         pkg/mjpeg/
-COPY pkg/restream/go.mod                      pkg/restream/
+COPY shared/cameras/go.mod                       shared/cameras/
+COPY shared/mjpeg/go.mod                         shared/mjpeg/
+COPY shared/restream/go.mod                      shared/restream/
 COPY services/camera-web-restreamer-api/go.mod services/camera-web-restreamer-api/
 
 RUN go work init \
     ./services/camera-web-restreamer-api \
-    ./pkg/cameras \
-    ./pkg/mjpeg \
-    ./pkg/restream
+    ./shared/cameras \
+    ./shared/mjpeg \
+    ./shared/restream
 
-COPY pkg/cameras/                             pkg/cameras/
-COPY pkg/mjpeg/                               pkg/mjpeg/
-COPY pkg/restream/                            pkg/restream/
+COPY shared/cameras/                             shared/cameras/
+COPY shared/mjpeg/                               shared/mjpeg/
+COPY shared/restream/                            shared/restream/
 COPY services/camera-web-restreamer-api/      services/camera-web-restreamer-api/
 
 WORKDIR /src/services/camera-web-restreamer-api

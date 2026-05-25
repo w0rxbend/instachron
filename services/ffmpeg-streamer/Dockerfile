@@ -1,12 +1,12 @@
 FROM golang:1.22-alpine AS builder
 WORKDIR /src
 
-COPY pkg/frameipc/go.mod              pkg/frameipc/
+COPY shared/frameipc/go.mod              shared/frameipc/
 COPY services/ffmpeg-streamer/go.mod  services/ffmpeg-streamer/
 
-RUN go work init ./services/ffmpeg-streamer ./pkg/frameipc
+RUN go work init ./services/ffmpeg-streamer ./shared/frameipc
 
-COPY pkg/frameipc/                    pkg/frameipc/
+COPY shared/frameipc/                    shared/frameipc/
 COPY services/ffmpeg-streamer/        services/ffmpeg-streamer/
 
 WORKDIR /src/services/ffmpeg-streamer

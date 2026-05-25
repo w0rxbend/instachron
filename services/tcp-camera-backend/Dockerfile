@@ -1,12 +1,12 @@
 FROM golang:1.22-alpine AS builder
 WORKDIR /src
 
-COPY pkg/frameipc/go.mod               pkg/frameipc/
+COPY shared/frameipc/go.mod               shared/frameipc/
 COPY services/tcp-camera-backend/go.mod services/tcp-camera-backend/
 
-RUN go work init ./services/tcp-camera-backend ./pkg/frameipc
+RUN go work init ./services/tcp-camera-backend ./shared/frameipc
 
-COPY pkg/frameipc/                      pkg/frameipc/
+COPY shared/frameipc/                      shared/frameipc/
 COPY services/tcp-camera-backend/       services/tcp-camera-backend/
 
 WORKDIR /src/services/tcp-camera-backend

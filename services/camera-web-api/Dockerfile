@@ -1,16 +1,16 @@
 FROM golang:1.22-alpine AS builder
 WORKDIR /src
 
-COPY pkg/cameras/go.mod               pkg/cameras/
-COPY pkg/frameipc/go.mod              pkg/frameipc/
-COPY pkg/mjpeg/go.mod                 pkg/mjpeg/
+COPY shared/cameras/go.mod               shared/cameras/
+COPY shared/frameipc/go.mod              shared/frameipc/
+COPY shared/mjpeg/go.mod                 shared/mjpeg/
 COPY services/camera-web-api/go.mod   services/camera-web-api/
 
-RUN go work init ./services/camera-web-api ./pkg/cameras ./pkg/frameipc ./pkg/mjpeg
+RUN go work init ./services/camera-web-api ./shared/cameras ./shared/frameipc ./shared/mjpeg
 
-COPY pkg/cameras/                     pkg/cameras/
-COPY pkg/frameipc/                    pkg/frameipc/
-COPY pkg/mjpeg/                       pkg/mjpeg/
+COPY shared/cameras/                     shared/cameras/
+COPY shared/frameipc/                    shared/frameipc/
+COPY shared/mjpeg/                       shared/mjpeg/
 COPY services/camera-web-api/         services/camera-web-api/
 
 WORKDIR /src/services/camera-web-api
