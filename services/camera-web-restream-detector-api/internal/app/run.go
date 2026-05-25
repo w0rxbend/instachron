@@ -40,15 +40,30 @@ func Run() {
 			configPath, cfg.ModelPath, cfg.ConfThreshold, cfg.NMSThreshold)
 	}
 
+	// ORT_LIB_PATH env var overrides whatever is in config.json, making it easy
+	// to point at a locally downloaded libonnxruntime.so without editing the file.
+	if v := envString("ORT_LIB_PATH", ""); v != "" {
+		cfg.OrtLibPath = v
+	}
+
+	logger.Printf("ORT library path: %q (override with ORT_LIB_PATH env var)", cfg.OrtLibPath)
+
 	// load the detector; fall back to passthrough if the model isn't available yet
 	var processor restream.Processor
-	det, err := detect.New(cfg)
+	det, err := detect.New(cfg, logger)
 	if err != nil {
 		logger.Printf("detector unavailable (%v) — frames will pass through unchanged", err)
+		logger.Printf("hint: download ONNX Runtime from https://github.com/microsoft/onnxruntime/releases and set ORT_LIB_PATH=/path/to/libonnxruntime.so.x.y.z")
 		processor = restream.Noop{}
 	} else {
-		logger.Printf("YOLOv8 detector ready (input %dx%d, %d classes)",
-			cfg.InputWidth, cfg.InputHeight, cfg.NumClasses)
+		logger.Printf("YOLOv8 detector ready (input %dx%d, %d classes, output %s)",
+			cfg.InputWidth, cfg.InputHeight, cfg.NumClasses,
+			func() string {
+				if det.Layout().Transposed {
+					return "transposed [1,boxes,channels]"
+				}
+				return "channel-first [1,channels,boxes]"
+			}())
 		processor = det
 	}
 

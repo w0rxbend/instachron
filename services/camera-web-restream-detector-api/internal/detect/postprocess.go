@@ -11,22 +11,32 @@ type Detection struct {
 	X2, Y2     float32 // bottom-right
 }
 
-// parseOutput decodes YOLOv8 ONNX output ([1, 4+numClasses, numBoxes] flat
-// float32) into filtered, NMS-applied detections mapped to original image space.
+// parseOutput decodes YOLOv8 ONNX output into filtered, NMS-applied detections
+// mapped to original image space. It handles both common export layouts:
 //
-// YOLOv8 stores predictions column-major over numBoxes:
-//
-//	data[ch*numBoxes + i]  →  channel ch of box i
-//
-// Channels 0-3 are cx,cy,w,h in letterboxed pixel space (0..inputSize).
-// Channels 4.. are per-class confidence scores (no sigmoid needed for v8).
+//	[1, 4+classes, boxes] — channel-first  (layout.Transposed == false)
+//	[1, boxes, 4+classes] — boxes-first    (layout.Transposed == true)
 func parseOutput(
 	data []float32,
-	numClasses, numBoxes int,
+	layout OutputLayout,
 	confThresh, nmsThresh float32,
 	lb letterboxResult,
 	origW, origH int,
 ) []Detection {
+	numBoxes := layout.NumBoxes
+	numClasses := layout.NumChannels - 4
+
+	// at returns data[channel, box] regardless of storage layout
+	var at func(ch, box int) float32
+	if layout.Transposed {
+		// data[box * numChannels + ch]
+		nc := layout.NumChannels
+		at = func(ch, box int) float32 { return data[box*nc+ch] }
+	} else {
+		// data[ch * numBoxes + box]
+		at = func(ch, box int) float32 { return data[ch*numBoxes+box] }
+	}
+
 	var candidates []Detection
 
 	for i := 0; i < numBoxes; i++ {
@@ -34,7 +44,7 @@ func parseOutput(
 		bestScore := float32(0)
 		bestClass := 0
 		for c := 0; c < numClasses; c++ {
-			s := data[(4+c)*numBoxes+i]
+			s := at(4+c, i)
 			if s > bestScore {
 				bestScore = s
 				bestClass = c
@@ -44,10 +54,10 @@ func parseOutput(
 			continue
 		}
 
-		cx := data[0*numBoxes+i]
-		cy := data[1*numBoxes+i]
-		w := data[2*numBoxes+i]
-		h := data[3*numBoxes+i]
+		cx := at(0, i)
+		cy := at(1, i)
+		w := at(2, i)
+		h := at(3, i)
 
 		// convert to corners in letterboxed space
 		bx1 := cx - w/2

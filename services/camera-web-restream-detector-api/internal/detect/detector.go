@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"log"
 	"os"
 	"sync"
 
@@ -25,6 +26,7 @@ type Config struct {
 	InputHeight   int     `json:"input_height"`   // default 640
 	NumClasses    int     `json:"num_classes"`    // default 80
 	JPEGQuality   int     `json:"jpeg_quality"`   // default 85
+	Debug         bool    `json:"debug"`          // log max score and detection count per frame
 }
 
 func DefaultConfig() Config {
@@ -54,6 +56,13 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+// OutputLayout describes how the model's flat output array is indexed.
+type OutputLayout struct {
+	NumBoxes    int
+	NumChannels int
+	Transposed  bool // true = [1, numBoxes, numChannels]; false = [1, numChannels, numBoxes]
+}
+
 // Detector runs YOLOv8 inference. Process is safe for concurrent callers —
 // if inference is already running a frame is passed through unchanged (no queueing).
 type Detector struct {
@@ -61,7 +70,8 @@ type Detector struct {
 	session      *ort.AdvancedSession
 	inputTensor  *ort.Tensor[float32]
 	outputTensor *ort.Tensor[float32]
-	numBoxes     int
+	layout       OutputLayout
+	logger       *log.Logger
 	mu           sync.Mutex
 	bufPool      sync.Pool
 }
@@ -69,7 +79,11 @@ type Detector struct {
 var ortOnce sync.Once
 
 // New initialises the ONNX Runtime environment (once per process) and loads the model.
-func New(cfg Config) (*Detector, error) {
+// logger is used for debug output when cfg.Debug is true; pass nil to use the default logger.
+func New(cfg Config, logger *log.Logger) (*Detector, error) {
+	if logger == nil {
+		logger = log.Default()
+	}
 	var initErr error
 	ortOnce.Do(func() {
 		if cfg.OrtLibPath != "" {
@@ -81,9 +95,13 @@ func New(cfg Config) (*Detector, error) {
 		return nil, fmt.Errorf("ort init: %w", initErr)
 	}
 
-	numBoxes := (cfg.InputWidth/8)*(cfg.InputHeight/8) +
-		(cfg.InputWidth/16)*(cfg.InputHeight/16) +
-		(cfg.InputWidth/32)*(cfg.InputHeight/32)
+	// Query the model's actual output shape so we allocate the tensor correctly
+	// and index the data correctly regardless of export format.
+	// YOLOv8 can export as [1, 4+classes, boxes] or transposed [1, boxes, 4+classes].
+	layout, err := probeOutputLayout(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("probe model output: %w", err)
+	}
 
 	inputShape := ort.NewShape(1, 3, int64(cfg.InputHeight), int64(cfg.InputWidth))
 	inputTensor, err := ort.NewEmptyTensor[float32](inputShape)
@@ -91,7 +109,12 @@ func New(cfg Config) (*Detector, error) {
 		return nil, fmt.Errorf("input tensor: %w", err)
 	}
 
-	outputShape := ort.NewShape(1, int64(4+cfg.NumClasses), int64(numBoxes))
+	var outputShape ort.Shape
+	if layout.Transposed {
+		outputShape = ort.NewShape(1, int64(layout.NumBoxes), int64(layout.NumChannels))
+	} else {
+		outputShape = ort.NewShape(1, int64(layout.NumChannels), int64(layout.NumBoxes))
+	}
 	outputTensor, err := ort.NewEmptyTensor[float32](outputShape)
 	if err != nil {
 		inputTensor.Destroy()
@@ -117,10 +140,44 @@ func New(cfg Config) (*Detector, error) {
 		session:      session,
 		inputTensor:  inputTensor,
 		outputTensor: outputTensor,
-		numBoxes:     numBoxes,
+		layout:       layout,
+		logger:       logger,
 		bufPool:      sync.Pool{New: func() any { return new(bytes.Buffer) }},
 	}, nil
 }
+
+// probeOutputLayout inspects the model file to determine the actual output tensor
+// shape and returns the appropriate indexing layout.
+func probeOutputLayout(cfg Config) (OutputLayout, error) {
+	_, outputs, err := ort.GetInputOutputInfo(cfg.ModelPath)
+	if err != nil {
+		return OutputLayout{}, fmt.Errorf("GetInputOutputInfo: %w", err)
+	}
+	if len(outputs) == 0 {
+		return OutputLayout{}, fmt.Errorf("model has no outputs")
+	}
+
+	dims := outputs[0].Dimensions
+	if len(dims) != 3 {
+		return OutputLayout{}, fmt.Errorf("expected 3-D output, got %v", dims)
+	}
+	// dims = [batch, A, B]; batch is always 1
+	a, b := int(dims[1]), int(dims[2])
+	numChannels := 4 + cfg.NumClasses
+
+	switch {
+	case a == numChannels: // [1, 84, 8400] — channel-first
+		return OutputLayout{NumBoxes: b, NumChannels: a, Transposed: false}, nil
+	case b == numChannels: // [1, 8400, 84] — transposed / boxes-first
+		return OutputLayout{NumBoxes: a, NumChannels: b, Transposed: true}, nil
+	default:
+		return OutputLayout{}, fmt.Errorf(
+			"output shape %v doesn't match expected numChannels=%d", dims, numChannels)
+	}
+}
+
+// Layout returns the probed output layout (useful for logging).
+func (d *Detector) Layout() OutputLayout { return d.layout }
 
 // Destroy releases ORT resources. Call once when the detector is no longer needed.
 func (d *Detector) Destroy() {
@@ -129,52 +186,68 @@ func (d *Detector) Destroy() {
 	d.outputTensor.Destroy()
 }
 
-// Process implements restream.Processor. If inference is already running for
-// another frame, the original jpeg is passed through unchanged.
+// Detect runs inference on jpeg, returning the detections and the annotated JPEG.
+// It blocks until inference completes (unlike Process which drops busy frames).
+func (d *Detector) Detect(jpeg []byte) ([]Detection, []byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.infer(jpeg)
+}
+
+// Process implements restream.Processor. If inference is already in progress the
+// original frame is passed through unchanged to keep stream latency bounded.
 func (d *Detector) Process(jpeg []byte, push func([]byte)) {
 	if !d.mu.TryLock() {
 		push(jpeg)
 		return
 	}
 	defer d.mu.Unlock()
-	push(d.process(jpeg))
+	_, annotated, err := d.infer(jpeg)
+	if err != nil || annotated == nil {
+		push(jpeg)
+		return
+	}
+	push(annotated)
 }
 
-func (d *Detector) process(jpeg []byte) []byte {
+// infer is the internal pipeline; caller must hold d.mu.
+func (d *Detector) infer(jpeg []byte) ([]Detection, []byte, error) {
 	src, err := imaging.Decode(bytes.NewReader(jpeg))
 	if err != nil {
-		return jpeg
+		return nil, nil, fmt.Errorf("decode: %w", err)
 	}
-
-	origW := src.Bounds().Dx()
-	origH := src.Bounds().Dy()
 
 	lb := letterbox(src, d.cfg.InputWidth, d.cfg.InputHeight)
 	toTensor(lb.img, d.inputTensor.GetData())
 
 	if err := d.session.Run(); err != nil {
-		return jpeg
+		return nil, nil, fmt.Errorf("inference: %w", err)
 	}
 
-	dets := parseOutput(
-		d.outputTensor.GetData(),
-		d.cfg.NumClasses, d.numBoxes,
-		d.cfg.ConfThreshold, d.cfg.NMSThreshold,
-		lb, origW, origH,
-	)
+	raw := d.outputTensor.GetData()
 
-	var nrgba *image.NRGBA
-	if n, ok := src.(*image.NRGBA); ok {
-		nrgba = n
-	} else {
-		nrgba = image.NewNRGBA(src.Bounds())
-		for y := src.Bounds().Min.Y; y < src.Bounds().Max.Y; y++ {
-			for x := src.Bounds().Min.X; x < src.Bounds().Max.X; x++ {
-				nrgba.Set(x, y, src.At(x, y))
+	if d.cfg.Debug {
+		maxScore := float32(0)
+		for _, v := range raw {
+			if v > maxScore {
+				maxScore = v
 			}
+		}
+		d.logger.Printf("detect debug: output max_value=%.4f layout=%+v", maxScore, d.layout)
+	}
+
+	dets := parseOutput(raw, d.layout, d.cfg.ConfThreshold, d.cfg.NMSThreshold,
+		lb, src.Bounds().Dx(), src.Bounds().Dy())
+
+	if d.cfg.Debug {
+		d.logger.Printf("detect debug: %d detection(s) (conf_threshold=%.2f)", len(dets), d.cfg.ConfThreshold)
+		for _, det := range dets {
+			d.logger.Printf("  [%s] conf=%.3f box=(%.0f,%.0f)-(%.0f,%.0f)",
+				det.ClassName, det.Confidence, det.X1, det.Y1, det.X2, det.Y2)
 		}
 	}
 
+	nrgba := toNRGBA(src)
 	annotated := Annotate(nrgba, dets)
 
 	buf := d.bufPool.Get().(*bytes.Buffer)
@@ -182,10 +255,23 @@ func (d *Detector) process(jpeg []byte) []byte {
 	defer d.bufPool.Put(buf)
 
 	if err := imaging.Encode(buf, annotated, imaging.JPEG, imaging.JPEGQuality(d.cfg.JPEGQuality)); err != nil {
-		return jpeg
+		return dets, nil, fmt.Errorf("encode: %w", err)
 	}
 
 	out := make([]byte, buf.Len())
 	copy(out, buf.Bytes())
-	return out
+	return dets, out, nil
+}
+
+func toNRGBA(src image.Image) *image.NRGBA {
+	if n, ok := src.(*image.NRGBA); ok {
+		return n
+	}
+	dst := image.NewNRGBA(src.Bounds())
+	for y := src.Bounds().Min.Y; y < src.Bounds().Max.Y; y++ {
+		for x := src.Bounds().Min.X; x < src.Bounds().Max.X; x++ {
+			dst.Set(x, y, src.At(x, y))
+		}
+	}
+	return dst
 }
