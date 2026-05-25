@@ -68,7 +68,7 @@ services:
     restart: unless-stopped
 
   # ── Optional: Lanczos upscale restream transform ───────────────────────────
-  # Activate with: docker compose --profile fsrcnn up
+  # Activate with: docker compose --profile upscaler up
 
   camera-web-restream-upscaler-api:
     build:

@@ -10,7 +10,7 @@ This repository is a Go workspace with independently deployable service modules 
 - `services/camera-web-api`: HTTP API and web UI backed by the frame IPC socket.
 - `services/camera-web-restreamer-api`: HTTP restream proxy for camera streams.
 - `services/camera-web-restream-enhancer-api`: restream proxy with image enhancement.
-- `services/camera-web-restream-fsrcnn-api`: optional FSRCNN upscaling restream proxy.
+- `services/camera-web-restream-upscaler-api`: optional UPSCALER upscaling restream proxy.
 - `services/ffmpeg-streamer`: ffmpeg RTMP streaming process.
 
 From the repository root, workspace-aware Go commands can target any service command:
