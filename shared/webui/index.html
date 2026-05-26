@@ -570,6 +570,7 @@
     const closeButton = document.getElementById('modal-close');
     const known = new Map();
     let activeCamera = null;
+    let stopModalPoller = null;
     const cameraIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4l1.6 2H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.9l1.6-2h5z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg>';
     const openIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17L17 7"></path><path d="M9 7h8v8"></path><path d="M5 5v14h14"></path></svg>';
     const systemTheme = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
@@ -611,12 +612,46 @@
       });
     }
 
+    // Minimum ms between snapshot requests per camera.
+    // Short-lived requests share the browser's connection pool so any number of
+    // cameras can display simultaneously without hitting the HTTP/1.1 per-host
+    // connection limit that caps persistent MJPEG streams at ~6 tabs.
+    const POLL_INTERVAL = 150;
+
     function streamURL(id) {
       return '/cameras/' + encodeURIComponent(id) + '/stream';
     }
 
     function snapshotURL(id) {
       return '/cameras/' + encodeURIComponent(id) + '/snapshot';
+    }
+
+    // createPoller continuously fetches snapshots for id and updates img.src.
+    // Returns a stop() function; call it when the img is no longer needed.
+    function createPoller(img, id) {
+      let active = true;
+      let timer = null;
+
+      function loadNext() {
+        if (!active) return;
+        const url = snapshotURL(id) + '?t=' + Date.now();
+        const tmp = new Image();
+        tmp.onload = () => {
+          if (!active) return;
+          img.src = tmp.src;
+          timer = setTimeout(loadNext, POLL_INTERVAL);
+        };
+        tmp.onerror = () => {
+          if (active) timer = setTimeout(loadNext, 1000);
+        };
+        tmp.src = url;
+      }
+
+      loadNext();
+      return function stop() {
+        active = false;
+        clearTimeout(timer);
+      };
     }
 
     function cameraName(cam) {
@@ -671,7 +706,7 @@
       card.dataset.id = cam.id;
       card.innerHTML =
         '<button class="feed-button" type="button">' +
-          '<img src="' + streamURL(cam.id) + '" alt="' + cameraName(cam) + '">' +
+          '<img alt="' + cameraName(cam) + '">' +
         '</button>' +
         '<span class="offline-badge">Offline</span>' +
         '<div class="camera-bar">' +
@@ -682,9 +717,12 @@
           '</div>' +
         '</div>';
 
+      const img = card.querySelector('.feed-button img');
+      const stopPoller = createPoller(img, cam.id);
+
       card.querySelector('.feed-button').addEventListener('click', () => openModal(known.get(cam.id).cam));
       grid.appendChild(card);
-      known.set(cam.id, { card, cam });
+      known.set(cam.id, { card, cam, stopPoller });
       setCameraState(card, cam);
       applyFilters();
     }
@@ -702,18 +740,21 @@
     }
 
     function openModal(cam) {
+      if (stopModalPoller) { stopModalPoller(); stopModalPoller = null; }
       activeCamera = cam;
       modalName.textContent = cameraName(cam);
       modalId.textContent = 'ID ' + cam.id;
       modalDot.style.background = cam.online ? 'var(--green)' : 'var(--red)';
-      modalImg.src = streamURL(cam.id);
+      modalImg.removeAttribute('src');
       modalImg.alt = cameraName(cam);
+      stopModalPoller = createPoller(modalImg, cam.id);
       modal.classList.add('open');
       document.body.classList.add('modal-active');
       closeButton.focus();
     }
 
     function closeModal() {
+      if (stopModalPoller) { stopModalPoller(); stopModalPoller = null; }
       modal.classList.remove('open');
       document.body.classList.remove('modal-active');
       modalImg.removeAttribute('src');
@@ -760,6 +801,7 @@
 
           for (const [id, entry] of known) {
             if (!cameras.some(cam => cam.id === id)) {
+              entry.stopPoller();
               entry.card.remove();
               known.delete(id);
             }

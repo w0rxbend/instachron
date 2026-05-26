@@ -39,6 +39,11 @@ func newHub(id string, index, rotation int) *Hub {
 	}
 }
 
+// subBufSize is the per-subscriber channel buffer. A larger buffer absorbs the
+// transient delay between subscription and the handler goroutine starting its
+// read loop, preventing frames from being dropped before the stream is visible.
+const subBufSize = 8
+
 // Subscribe registers a new subscriber channel. The latest known frame is sent
 // immediately so the client renders without waiting for the next push.
 // Caller must call Unsubscribe when done.
@@ -46,7 +51,7 @@ func (h *Hub) Subscribe() chan []byte {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	ch := make(chan []byte, 1)
+	ch := make(chan []byte, subBufSize)
 	h.subs[ch] = struct{}{}
 
 	if p := h.latest.Load(); p != nil {
