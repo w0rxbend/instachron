@@ -12,6 +12,7 @@ use (
 	./services/camera-web-restream-enhancer-api
 	./services/camera-web-restream-upscaler-api
 	./services/camera-web-restreamer-api
+	./services/camera-recorder
 	./services/ffmpeg-streamer
 	./services/tcp-camera-backend
 )

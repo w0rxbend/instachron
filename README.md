@@ -11,6 +11,8 @@ This repository is a Go workspace with independently deployable service modules 
 - `services/camera-web-restreamer-api`: HTTP restream proxy for camera streams.
 - `services/camera-web-restream-enhancer-api`: restream proxy with image enhancement.
 - `services/camera-web-restream-upscaler-api`: optional UPSCALER upscaling restream proxy.
+- `services/camera-web-restream-detector-api`: optional YOLOv8 detection restream proxy.
+- `services/camera-recorder`: optional H.264 timelapse recorder for streamproto TCP feeds.
 - `services/ffmpeg-streamer`: ffmpeg RTMP streaming process.
 
 From the repository root, workspace-aware Go commands can target any service command:
@@ -63,6 +65,22 @@ The sequence number can be used to detect dropped frames. The timestamp is the E
 
 Each accepted JPEG is published to connected consumers over the Unix socket configured by `IPC_SOCKET_PATH`.
 
+## Internal restream protocol
+
+`camera-web-api` also republishes frames as an internal TCP stream for proxy-to-proxy services. This transport is implemented by `shared/streamproto` and is separate from the ESP32 camera protocol and the Unix IPC protocol.
+
+Default TCP ports:
+
+| Service | HTTP | Downstream TCP |
+| --- | ---: | ---: |
+| `camera-web-api` | `8080` | `9001` |
+| `camera-web-restreamer-api` | `8090` | `9002` |
+| `camera-web-restream-enhancer-api` | `8091` | `9003` |
+| `camera-web-restream-upscaler-api` | `8092` | `9004` |
+| `camera-web-restream-detector-api` | `8093` | `9005` |
+
+Restream services consume upstream frames with `UPSTREAM_TCP_ADDR`, for example `camera-web-api:9001` in Docker Compose.
+
 ## Running
 
 Create a local environment file:
@@ -114,4 +132,33 @@ CAMERA_ID=0
 FFMPEG_PATH=ffmpeg
 STREAM_FRAME_RATE=10
 FFMPEG_RESTART_DELAY=5s
+```
+
+## Recording
+
+`camera-recorder` consumes the same internal TCP stream as the restream services and writes per-camera H.264 MP4 timelapse segments. By default, it records 10 minutes of raw camera time into about 1 minute of output video:
+
+```sh
+docker compose --profile recording up camera-recorder
+```
+
+Useful recorder environment variables:
+
+```sh
+UPSTREAM_TCP_ADDR=localhost:9001
+STORAGE_ROOT_DIR=./recordings
+RECORDER_OUTPUT_FPS=10
+TIMELAPSE_FACTOR=10
+SEGMENT_RAW_DURATION=10m
+RECORDER_MAX_FILE_BYTES=104857600
+KEEP_FILES_PER_CAMERA=144
+```
+
+Recorder API:
+
+```text
+GET /cameras
+GET /videos?camera_id=0&limit=100
+GET /videos/{cameraID}/{fileName}
+GET /metrics
 ```

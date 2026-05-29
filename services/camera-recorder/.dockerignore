@@ -1,0 +1,5 @@
+.git
+.gitignore
+recordings
+*.mp4
+*.sock

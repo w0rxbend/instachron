@@ -1,0 +1,22 @@
+{
+  "http_addr": ":8094",
+  "upstream_tcp_addr": "localhost:9001",
+  "recording": {
+    "output_fps": 10,
+    "timelapse_factor": 10,
+    "segment_raw_duration": "10m",
+    "max_file_bytes": 104857600,
+    "keep_files_per_camera": 144,
+    "queue_size_per_camera": 128,
+    "inactive_close_duration": "30s"
+  },
+  "storage": {
+    "type": "local",
+    "root_dir": "./recordings"
+  },
+  "ffmpeg": {
+    "path": "ffmpeg",
+    "preset": "veryfast",
+    "crf": 23
+  }
+}

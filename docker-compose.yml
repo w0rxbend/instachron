@@ -30,6 +30,8 @@ services:
     environment:
       HTTP_ADDR: ":8080"
       IPC_SOCKET_PATH: /tmp/instachron/frames.sock
+      TCP_ADDR: ":9001"
+      TCP_ENABLED: "true"
     depends_on:
       - tcp-camera-backend
     restart: unless-stopped
@@ -44,7 +46,8 @@ services:
       - "${RESTREAMER_PORT:-8090}:8090"
     environment:
       HTTP_ADDR: ":8090"
-      ORIGIN_URL: "http://camera-web-api:8080"
+      UPSTREAM_TCP_ADDR: "camera-web-api:9001"
+      TCP_ADDR: ":9002"
     depends_on:
       - camera-web-api
     restart: unless-stopped
@@ -57,11 +60,8 @@ services:
       - "${ENHANCER_PORT:-8091}:8091"
     environment:
       HTTP_ADDR: ":8091"
-      ORIGIN_URL: "http://camera-web-api:8080"
-      SHARPEN: "${SHARPEN:-1.0}"
-      DARK_THRESHOLD: "${DARK_THRESHOLD:-0.35}"
-      BRIGHTNESS_MAX: "${BRIGHTNESS_MAX:-30.0}"
-      CONTRAST_MAX: "${CONTRAST_MAX:-25.0}"
+      UPSTREAM_TCP_ADDR: "camera-web-api:9001"
+      TCP_ADDR: ":9003"
       JPEG_QUALITY: "${JPEG_QUALITY:-85}"
     depends_on:
       - camera-web-api
@@ -78,6 +78,8 @@ services:
       - "${UPSCALER_PORT:-8092}:8092"
     environment:
       HTTP_ADDR: ":8092"
+      UPSTREAM_TCP_ADDR: "camera-web-api:9001"
+      TCP_ADDR: ":9004"
       JPEG_QUALITY: "${UPSCALER_JPEG_QUALITY:-85}"
       NUM_WORKERS: "${UPSCALER_WORKERS:-}"
       UPSCALE_FACTOR: "${UPSCALE_FACTOR:-2}"
@@ -121,7 +123,37 @@ services:
       - streaming
     restart: unless-stopped
 
+  # ── Optional: H.264 timelapse recording ────────────────────────────────────
+  # Activate with: docker compose --profile recording up
+
+  camera-recorder:
+    build:
+      context: .
+      dockerfile: services/camera-recorder/Dockerfile
+    ports:
+      - "${RECORDER_PORT:-8094}:8094"
+    volumes:
+      - recordings:/recordings
+    environment:
+      HTTP_ADDR: ":8094"
+      UPSTREAM_TCP_ADDR: "camera-web-api:9001"
+      STORAGE_ROOT_DIR: /recordings
+      OUTPUT_FPS: "${RECORDER_OUTPUT_FPS:-10}"
+      TIMELAPSE_FACTOR: "${TIMELAPSE_FACTOR:-10}"
+      SEGMENT_RAW_DURATION: "${SEGMENT_RAW_DURATION:-10m}"
+      MAX_FILE_BYTES: "${RECORDER_MAX_FILE_BYTES:-104857600}"
+      KEEP_FILES_PER_CAMERA: "${KEEP_FILES_PER_CAMERA:-144}"
+      QUEUE_SIZE_PER_CAMERA: "${RECORDER_QUEUE_SIZE:-128}"
+      FFMPEG_PRESET: "${RECORDER_FFMPEG_PRESET:-veryfast}"
+      FFMPEG_CRF: "${RECORDER_FFMPEG_CRF:-23}"
+    depends_on:
+      - camera-web-api
+    profiles:
+      - recording
+    restart: unless-stopped
+
 volumes:
   # Shared unix socket directory for tcp-camera-backend, camera-web-api,
   # and ffmpeg-streamer. The socket file lives at /tmp/instachron/frames.sock.
   ipc:
+  recordings:
